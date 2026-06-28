@@ -32,7 +32,7 @@ let rec array_for_node index level node =
   | Leaf values -> values
   | Branch children ->
       array_for_node index (level - bits)
-        children.((index lsr level) land mask)
+        (Array.unsafe_get children ((index lsr level) land mask))
 
 let rec array_for v index =
   if index < 0 || index >= v.count then invalid_index ();
@@ -42,24 +42,25 @@ let rec array_for v index =
 let rec get_node index level node =
   match node with
   | Empty -> invalid_arg "corrupt vector"
-  | Leaf values -> values.(index land mask)
+  | Leaf values -> Array.unsafe_get values (index land mask)
   | Branch children ->
-      get_node index (level - bits) children.((index lsr level) land mask)
+      get_node index (level - bits)
+        (Array.unsafe_get children ((index lsr level) land mask))
 
 let get_shift_10 root index =
   match root with
   | Branch root_children -> (
-      match root_children.((index lsr (bits * 2)) land mask) with
+      match Array.unsafe_get root_children ((index lsr (bits * 2)) land mask) with
       | Branch leaf_parents -> (
-          match leaf_parents.((index lsr bits) land mask) with
-          | Leaf values -> values.(index land mask)
+          match Array.unsafe_get leaf_parents ((index lsr bits) land mask) with
+          | Leaf values -> Array.unsafe_get values (index land mask)
           | child -> get_node index bits child)
       | child -> get_node index bits child)
   | node -> get_node index (bits * 2) node
 
 let get v index =
   if index < 0 || index >= v.count then invalid_index ();
-  if index >= v.tailoff then v.tail.(index land mask)
+  if index >= v.tailoff then Array.unsafe_get v.tail (index land mask)
   else if v.shift = bits * 2 then get_shift_10 v.root index
   else get_node index v.shift v.root
 
@@ -68,19 +69,20 @@ let rec do_assoc level node index value =
   | Empty -> invalid_arg "corrupt vector"
   | Leaf values ->
       let values' = Array.copy values in
-      values'.(index land mask) <- value;
+      Array.unsafe_set values' (index land mask) value;
       Leaf values'
   | Branch children ->
       let children' = Array.copy children in
       let i = (index lsr level) land mask in
-      children'.(i) <- do_assoc (level - bits) children.(i) index value;
+      Array.unsafe_set children' i
+        (do_assoc (level - bits) (Array.unsafe_get children i) index value);
       Branch children'
 
 let rec new_path level leaf =
   if level = 0 then leaf
   else
     let children = Array.make width Empty in
-    children.(0) <- new_path (level - bits) leaf;
+    Array.unsafe_set children 0 (new_path (level - bits) leaf);
     Branch children
 
 let rec push_tail count level parent tail_leaf =
