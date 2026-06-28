@@ -27,20 +27,19 @@ let tailoff count =
 
 let invalid_index () = invalid_arg "index out of bounds"
 
+let rec array_for_node index level node =
+  match node with
+  | Empty -> invalid_arg "corrupt vector"
+  | Leaf values -> values
+  | Branch children -> (
+      match children.(slot index level) with
+      | None -> invalid_arg "corrupt vector"
+      | Some child -> array_for_node index (level - bits) child)
+
 let rec array_for v index =
   if index < 0 || index >= v.count then invalid_index ();
   if index >= tailoff v.count then v.tail
-  else
-    let rec descend node level =
-      match node with
-      | Empty -> invalid_arg "corrupt vector"
-      | Leaf values -> values
-      | Branch children -> (
-          match children.(slot index level) with
-          | None -> invalid_arg "corrupt vector"
-          | Some child -> descend child (level - bits))
-    in
-    descend v.root v.shift
+  else array_for_node index v.shift v.root
 
 let get v index =
   let values = array_for v index in
@@ -89,9 +88,15 @@ let rec push_tail count level parent tail_leaf =
   children.(subidx) <- Some child;
   Branch children
 
+let append_tail tail value =
+  let length = Array.length tail in
+  let tail' = Array.make (length + 1) value in
+  Array.blit tail 0 tail' 0 length;
+  tail'
+
 let push v value =
   if Array.length v.tail < width then
-    { v with count = v.count + 1; tail = Array.append v.tail [| value |] }
+    { v with count = v.count + 1; tail = append_tail v.tail value }
   else
     let tail_leaf = Leaf v.tail in
     let root, shift =
