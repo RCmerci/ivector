@@ -4,7 +4,7 @@ let mask = width - 1
 
 type 'a node =
   | Empty
-  | Branch of 'a node option array
+  | Branch of 'a node array
   | Leaf of 'a array
 
 type 'a t = {
@@ -30,10 +30,9 @@ let rec array_for_node index level node =
   match node with
   | Empty -> invalid_arg "corrupt vector"
   | Leaf values -> values
-  | Branch children -> (
-      match children.((index lsr level) land mask) with
-      | None -> invalid_arg "corrupt vector"
-      | Some child -> array_for_node index (level - bits) child)
+  | Branch children ->
+      array_for_node index (level - bits)
+        children.((index lsr level) land mask)
 
 let rec array_for v index =
   if index < 0 || index >= v.count then invalid_index ();
@@ -44,10 +43,8 @@ let rec get_node index level node =
   match node with
   | Empty -> invalid_arg "corrupt vector"
   | Leaf values -> values.(index land mask)
-  | Branch children -> (
-      match children.((index lsr level) land mask) with
-      | None -> invalid_arg "corrupt vector"
-      | Some child -> get_node index (level - bits) child)
+  | Branch children ->
+      get_node index (level - bits) children.((index lsr level) land mask)
 
 let get v index =
   if index < 0 || index >= v.count then invalid_index ();
@@ -64,25 +61,20 @@ let rec do_assoc level node index value =
   | Branch children ->
       let children' = Array.copy children in
       let i = (index lsr level) land mask in
-      let child =
-        match children.(i) with
-        | Some child -> child
-        | None -> invalid_arg "corrupt vector"
-      in
-      children'.(i) <- Some (do_assoc (level - bits) child index value);
+      children'.(i) <- do_assoc (level - bits) children.(i) index value;
       Branch children'
 
 let rec new_path level leaf =
   if level = 0 then leaf
   else
-    let children = Array.make width None in
-    children.(0) <- Some (new_path (level - bits) leaf);
+    let children = Array.make width Empty in
+    children.(0) <- new_path (level - bits) leaf;
     Branch children
 
 let rec push_tail count level parent tail_leaf =
   let children =
     match parent with
-    | Empty -> Array.make width None
+    | Empty -> Array.make width Empty
     | Branch children -> Array.copy children
     | Leaf _ -> invalid_arg "corrupt vector"
   in
@@ -91,10 +83,10 @@ let rec push_tail count level parent tail_leaf =
     if level = bits then tail_leaf
     else
       match children.(subidx) with
-      | Some child -> push_tail count (level - bits) child tail_leaf
-      | None -> new_path (level - bits) tail_leaf
+      | Empty -> new_path (level - bits) tail_leaf
+      | child -> push_tail count (level - bits) child tail_leaf
   in
-  children.(subidx) <- Some child;
+  children.(subidx) <- child;
   Branch children
 
 let append_tail tail value =
@@ -111,9 +103,9 @@ let push v value =
     let tail_leaf = Leaf v.tail in
     let root, shift =
       if (v.count lsr bits) > (1 lsl v.shift) then
-        let children = Array.make width None in
-        children.(0) <- Some v.root;
-        children.(1) <- Some (new_path v.shift tail_leaf);
+        let children = Array.make width Empty in
+        children.(0) <- v.root;
+        children.(1) <- new_path v.shift tail_leaf;
         (Branch children, v.shift + bits)
       else (push_tail v.count v.shift v.root tail_leaf, v.shift)
     in
@@ -139,21 +131,17 @@ let rec pop_tail count level node =
   | Branch children ->
       let subidx = ((count - 2) lsr level) land mask in
       if level > bits then (
-        let child =
-          match children.(subidx) with
-          | Some child -> child
-          | None -> invalid_arg "corrupt vector"
-        in
+        let child = children.(subidx) in
         match pop_tail count (level - bits) child with
         | None when subidx = 0 -> None
         | new_child ->
             let children' = Array.copy children in
-            children'.(subidx) <- new_child;
+            children'.(subidx) <- Option.value new_child ~default:Empty;
             Some (Branch children'))
       else if subidx = 0 then None
       else
         let children' = Array.copy children in
-        children'.(subidx) <- None;
+        children'.(subidx) <- Empty;
         Some (Branch children')
 
 let pop v =
@@ -173,10 +161,10 @@ let pop v =
     let root = pop_tail v.count v.shift v.root |> Option.value ~default:Empty in
     let root, shift =
       match root with
-      | Branch children when v.shift > bits && children.(1) = None -> (
+      | Branch children when v.shift > bits && children.(1) = Empty -> (
           match children.(0) with
-          | Some child -> (child, v.shift - bits)
-          | None -> (Empty, bits))
+          | Empty -> (Empty, bits)
+          | child -> (child, v.shift - bits))
       | _ -> (root, v.shift)
     in
     { count; shift; root; tail = new_tail; tailoff = tailoff count }
