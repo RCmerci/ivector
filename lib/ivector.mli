@@ -20,6 +20,10 @@ val fold_left : ('acc -> 'a -> 'acc) -> 'acc -> 'a t -> 'acc
 
 val map : ('a -> 'b) -> 'a t -> 'b t
 
+val subvec : 'a t -> int -> int -> 'a t
+
+val concat : 'a t -> 'a t -> 'a t
+
 val of_list : 'a list -> 'a t
 
 val to_list : 'a t -> 'a list
