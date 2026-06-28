@@ -96,11 +96,11 @@ let rec push_tail count level parent tail_leaf =
   let child =
     if level = bits then tail_leaf
     else
-      match children.(subidx) with
+      match Array.unsafe_get children subidx with
       | Empty -> new_path (level - bits) tail_leaf
       | child -> push_tail count (level - bits) child tail_leaf
   in
-  children.(subidx) <- child;
+  Array.unsafe_set children subidx child;
   Branch children
 
 let append_tail tail value =
@@ -118,8 +118,8 @@ let push v value =
     let root, shift =
       if (v.count lsr bits) > (1 lsl v.shift) then
         let children = Array.make width Empty in
-        children.(0) <- v.root;
-        children.(1) <- new_path v.shift tail_leaf;
+        Array.unsafe_set children 0 v.root;
+        Array.unsafe_set children 1 (new_path v.shift tail_leaf);
         (Branch children, v.shift + bits)
       else (push_tail v.count v.shift v.root tail_leaf, v.shift)
     in
@@ -130,7 +130,7 @@ let set v index value =
   if index = v.count then push v value
   else if index >= v.tailoff then (
     let tail = Array.copy v.tail in
-    tail.(index land mask) <- value;
+    Array.unsafe_set tail (index land mask) value;
     { v with tail })
   else { v with root = do_assoc v.shift v.root index value }
 
