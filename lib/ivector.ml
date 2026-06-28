@@ -12,9 +12,10 @@ type 'a t = {
   shift : int;
   root : 'a node;
   tail : 'a array;
+  tailoff : int;
 }
 
-let empty = { count = 0; shift = bits; root = Empty; tail = [||] }
+let empty = { count = 0; shift = bits; root = Empty; tail = [||]; tailoff = 0 }
 
 let length v = v.count
 
@@ -38,7 +39,7 @@ let rec array_for_node index level node =
 
 let rec array_for v index =
   if index < 0 || index >= v.count then invalid_index ();
-  if index >= tailoff v.count then v.tail
+  if index >= v.tailoff then v.tail
   else array_for_node index v.shift v.root
 
 let get v index =
@@ -95,8 +96,9 @@ let append_tail tail value =
   tail'
 
 let push v value =
+  let count = v.count + 1 in
   if Array.length v.tail < width then
-    { v with count = v.count + 1; tail = append_tail v.tail value }
+    { v with count; tail = append_tail v.tail value; tailoff = tailoff count }
   else
     let tail_leaf = Leaf v.tail in
     let root, shift =
@@ -107,12 +109,12 @@ let push v value =
         (Branch children, v.shift + bits)
       else (push_tail v.count v.shift v.root tail_leaf, v.shift)
     in
-    { count = v.count + 1; shift; root; tail = [| value |] }
+    { count; shift; root; tail = [| value |]; tailoff = tailoff count }
 
 let set v index value =
   if index < 0 || index > v.count then invalid_index ();
   if index = v.count then push v value
-  else if index >= tailoff v.count then (
+  else if index >= v.tailoff then (
     let tail = Array.copy v.tail in
     tail.(index land mask) <- value;
     { v with tail })
@@ -150,12 +152,15 @@ let pop v =
   if v.count = 0 then invalid_index ()
   else if v.count = 1 then empty
   else if Array.length v.tail > 1 then
+    let count = v.count - 1 in
     {
       v with
-      count = v.count - 1;
+      count;
       tail = Array.sub v.tail 0 (Array.length v.tail - 1);
+      tailoff = tailoff count;
     }
   else
+    let count = v.count - 1 in
     let new_tail = array_for v (v.count - 2) in
     let root = pop_tail v.count v.shift v.root |> Option.value ~default:Empty in
     let root, shift =
@@ -166,7 +171,7 @@ let pop v =
           | None -> (Empty, bits))
       | _ -> (root, v.shift)
     in
-    { count = v.count - 1; shift; root; tail = new_tail }
+    { count; shift; root; tail = new_tail; tailoff = tailoff count }
 
 let of_list values = List.fold_left push empty values
 
