@@ -103,12 +103,8 @@ let bench_sequential_read (list_values, array_values, dynarray_values, ivector_v
          done;
          !sum));
   check "Ivector sequential read" expected
-    (time "Ivector sequential read" (fun () ->
-         let sum = ref 0 in
-         for i = 0 to Ivector.length ivector_values - 1 do
-           sum := !sum + Ivector.get ivector_values i
-         done;
-         !sum));
+    (time "Ivector sequential read (fold_left)" (fun () ->
+         Ivector.fold_left ( + ) 0 ivector_values));
   check "list sequential read" expected
     (time "list sequential read" (fun () -> List.fold_left ( + ) 0 list_values))
 

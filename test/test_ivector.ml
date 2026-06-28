@@ -93,6 +93,36 @@ let test_large_roundtrip () =
   check_int "large last" 99_999 (get v 99_999);
   check_list "large roundtrip" values (to_list v)
 
+let test_fold_left_visits_values_in_order () =
+  let v = of_list (range 1050) in
+  let visited = fold_left (fun acc value -> value :: acc) [] v |> List.rev in
+  check_list "fold_left order" (range 1050) visited;
+  check_int "fold_left sum" 550725 (fold_left ( + ) 0 v)
+
+let test_fold_left_empty_keeps_accumulator () =
+  let calls = ref 0 in
+  let result =
+    fold_left
+      (fun acc value ->
+        incr calls;
+        acc + value)
+      42 empty
+  in
+  check_int "fold_left empty accumulator" 42 result;
+  check_int "fold_left empty calls" 0 !calls
+
+let test_map_preserves_order_and_length () =
+  let v = of_list (range 1050) in
+  let mapped = map (fun value -> value * 2) v in
+  check_int "map length" 1050 (length mapped);
+  check_list "map order" (List.map (fun value -> value * 2) (range 1050)) (to_list mapped)
+
+let test_map_supports_type_changes_and_keeps_original () =
+  let v = of_list [ 1; 2; 3 ] in
+  let mapped = map string_of_int v in
+  check_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
+  check_list "map keeps original" [ 1; 2; 3 ] (to_list v)
+
 let () =
   List.iter
     (fun (name, test) ->
@@ -110,4 +140,8 @@ let () =
       ("pop_and_peek_across_boundaries", test_pop_and_peek_across_boundaries);
       ("invalid_indices", test_invalid_indices);
       ("large_roundtrip", test_large_roundtrip);
+      ("fold_left_visits_values_in_order", test_fold_left_visits_values_in_order);
+      ("fold_left_empty_keeps_accumulator", test_fold_left_empty_keeps_accumulator);
+      ("map_preserves_order_and_length", test_map_preserves_order_and_length);
+      ("map_supports_type_changes_and_keeps_original", test_map_supports_type_changes_and_keeps_original);
     ]

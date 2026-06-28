@@ -183,6 +183,30 @@ let pop v =
     in
     { count; shift; root; tail = new_tail; tailoff = tailoff count }
 
+let fold_array f acc values =
+  let acc = ref acc in
+  for i = 0 to Array.length values - 1 do
+    acc := f !acc (Array.unsafe_get values i)
+  done;
+  !acc
+
+let rec fold_node f acc node =
+  match node with
+  | Empty -> acc
+  | Leaf values -> fold_array f acc values
+  | Branch children ->
+      let acc = ref acc in
+      for i = 0 to width - 1 do
+        acc := fold_node f !acc (Array.unsafe_get children i)
+      done;
+      !acc
+
+let fold_left f acc v =
+  let acc = fold_node f acc v.root in
+  fold_array f acc v.tail
+
+let map f v = fold_left (fun acc value -> push acc (f value)) empty v
+
 let of_list values = List.fold_left push empty values
 
 let to_list v = List.init v.count (get v)
