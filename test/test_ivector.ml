@@ -123,6 +123,56 @@ let test_map_supports_type_changes_and_keeps_original () =
   check_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
   check_list "map keeps original" [ 1; 2; 3 ] (to_list v)
 
+let test_subvec_extracts_half_open_range () =
+  let v = of_list (range 1050) in
+  let slice = subvec v 31 1030 in
+  check_int "subvec length" 999 (length slice);
+  check_list "subvec range" (List.init 999 (fun i -> i + 31)) (to_list slice);
+  check_int "subvec fold_left sum" 529470 (fold_left ( + ) 0 slice);
+  check_list "subvec whole range" (range 1050) (to_list (subvec v 0 1050));
+  check_list "subvec empty range" [] (to_list (subvec v 10 10))
+
+let test_subvec_rejects_invalid_ranges () =
+  let v = of_list [ 1; 2; 3 ] in
+  check_raises_invalid_arg "subvec negative start" (fun () -> ignore (subvec v (-1) 2));
+  check_raises_invalid_arg "subvec inverted range" (fun () -> ignore (subvec v 2 1));
+  check_raises_invalid_arg "subvec past end" (fun () -> ignore (subvec v 0 4))
+
+let test_concat_preserves_order_and_operands () =
+  let left = of_list (range 1050) in
+  let right = of_list (List.init 50 (fun i -> i + 1050)) in
+  let combined = concat left right in
+  check_int "concat length" 1100 (length combined);
+  check_list "concat order" (range 1100) (to_list combined);
+  check_list "concat keeps left" (range 1050) (to_list left);
+  check_list "concat keeps right" (List.init 50 (fun i -> i + 1050)) (to_list right)
+
+let test_concat_handles_empty_vectors () =
+  let v = of_list [ 1; 2; 3 ] in
+  check_list "concat empty left" [ 1; 2; 3 ] (to_list (concat empty v));
+  check_list "concat empty right" [ 1; 2; 3 ] (to_list (concat v empty));
+  check_list "concat empty empty" [] (to_list (concat empty empty))
+
+let test_views_support_vector_operations () =
+  let base = of_list (range 80) in
+  let slice = subvec base 17 70 in
+  let slice_values = List.init 53 (fun i -> i + 17) in
+  check_int "subvec peek" 69 (peek slice);
+  check_list "subvec push" (slice_values @ [ 999 ]) (to_list (push slice 999));
+  check_list "subvec pop" (List.init 52 (fun i -> i + 17)) (to_list (pop slice));
+  check_list
+    "subvec set"
+    (List.mapi (fun i value -> if i = 20 then 888 else value) slice_values)
+    (to_list (set slice 20 888));
+  let combined = concat (subvec base 0 40) (subvec base 40 80) in
+  check_int "concat peek" 79 (peek combined);
+  check_list "concat push" (range 80 @ [ 777 ]) (to_list (push combined 777));
+  check_list "concat pop" (range 79) (to_list (pop combined));
+  check_list
+    "concat set"
+    (List.mapi (fun i value -> if i = 45 then 666 else value) (range 80))
+    (to_list (set combined 45 666))
+
 let () =
   List.iter
     (fun (name, test) ->
@@ -144,4 +194,9 @@ let () =
       ("fold_left_empty_keeps_accumulator", test_fold_left_empty_keeps_accumulator);
       ("map_preserves_order_and_length", test_map_preserves_order_and_length);
       ("map_supports_type_changes_and_keeps_original", test_map_supports_type_changes_and_keeps_original);
+      ("subvec_extracts_half_open_range", test_subvec_extracts_half_open_range);
+      ("subvec_rejects_invalid_ranges", test_subvec_rejects_invalid_ranges);
+      ("concat_preserves_order_and_operands", test_concat_preserves_order_and_operands);
+      ("concat_handles_empty_vectors", test_concat_handles_empty_vectors);
+      ("views_support_vector_operations", test_views_support_vector_operations);
     ]
