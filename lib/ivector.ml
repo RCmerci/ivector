@@ -21,8 +21,6 @@ let length v = v.count
 
 let is_empty v = v.count = 0
 
-let slot index level = (index lsr level) land mask
-
 let tailoff count =
   if count < width then 0 else ((count - 1) lsr bits) lsl bits
 
@@ -33,7 +31,7 @@ let rec array_for_node index level node =
   | Empty -> invalid_arg "corrupt vector"
   | Leaf values -> values
   | Branch children -> (
-      match children.(slot index level) with
+      match children.((index lsr level) land mask) with
       | None -> invalid_arg "corrupt vector"
       | Some child -> array_for_node index (level - bits) child)
 
@@ -47,7 +45,7 @@ let rec get_node index level node =
   | Empty -> invalid_arg "corrupt vector"
   | Leaf values -> values.(index land mask)
   | Branch children -> (
-      match children.(slot index level) with
+      match children.((index lsr level) land mask) with
       | None -> invalid_arg "corrupt vector"
       | Some child -> get_node index (level - bits) child)
 
@@ -65,7 +63,7 @@ let rec do_assoc level node index value =
       Leaf values'
   | Branch children ->
       let children' = Array.copy children in
-      let i = slot index level in
+      let i = (index lsr level) land mask in
       let child =
         match children.(i) with
         | Some child -> child
@@ -88,7 +86,7 @@ let rec push_tail count level parent tail_leaf =
     | Branch children -> Array.copy children
     | Leaf _ -> invalid_arg "corrupt vector"
   in
-  let subidx = slot (count - 1) level in
+  let subidx = ((count - 1) lsr level) land mask in
   let child =
     if level = bits then tail_leaf
     else
@@ -139,7 +137,7 @@ let rec pop_tail count level node =
   | Empty -> None
   | Leaf _ -> invalid_arg "corrupt vector"
   | Branch children ->
-      let subidx = slot (count - 2) level in
+      let subidx = ((count - 2) lsr level) land mask in
       if level > bits then (
         let child =
           match children.(subidx) with
