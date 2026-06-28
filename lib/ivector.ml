@@ -42,9 +42,19 @@ let rec array_for v index =
   if index >= v.tailoff then v.tail
   else array_for_node index v.shift v.root
 
+let rec get_node index level node =
+  match node with
+  | Empty -> invalid_arg "corrupt vector"
+  | Leaf values -> values.(index land mask)
+  | Branch children -> (
+      match children.(slot index level) with
+      | None -> invalid_arg "corrupt vector"
+      | Some child -> get_node index (level - bits) child)
+
 let get v index =
-  let values = array_for v index in
-  values.(index land mask)
+  if index < 0 || index >= v.count then invalid_index ();
+  if index >= v.tailoff then v.tail.(index land mask)
+  else get_node index v.shift v.root
 
 let rec do_assoc level node index value =
   match node with
