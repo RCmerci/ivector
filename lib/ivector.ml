@@ -202,9 +202,11 @@ let rec pop v =
     in
     { count; shift; root; tail = new_tail; tailoff = tailoff count }
 
-let fold_array f acc values =
+let fold_array = Array.fold_left
+
+let fold_array_range f acc values start stop =
   let acc = ref acc in
-  for i = 0 to Array.length values - 1 do
+  for i = start to stop - 1 do
     acc := f !acc (Array.unsafe_get values i)
   done;
   !acc
@@ -221,20 +223,88 @@ let rec fold_node f acc node =
       !acc
   | _ -> invalid_arg "corrupt vector"
 
-let rec fold_left f acc v =
-  if v.shift <> view_shift then
-    let acc = fold_node f acc v.root in
-    fold_array f acc v.tail
+let rec fold_range f acc v start stop =
+  if start = stop then acc
+  else if v.shift = view_shift then
+    match v.root with
+    | View { base; start = base_start } ->
+        fold_range f acc base (base_start + start) (base_start + stop)
+    | Append { left; right } ->
+        if stop <= left.count then fold_range f acc left start stop
+        else if start >= left.count then
+          fold_range f acc right (start - left.count) (stop - left.count)
+        else
+          let acc = fold_range f acc left start left.count in
+          fold_range f acc right 0 (stop - left.count)
+    | _ -> invalid_arg "corrupt vector"
+  else
+    let rec loop index acc =
+      if index = stop then acc
+      else
+        let values = array_for v index in
+        let offset = index land mask in
+        let length = min (Array.length values - offset) (stop - index) in
+        loop (index + length) (fold_array_range f acc values offset (offset + length))
+    in
+    loop start acc
+
+let fold_materialized f acc v =
+  let acc = fold_node f acc v.root in
+  fold_array f acc v.tail
+
+let append_depth_exceeds v max_depth =
+  let rec loop depth v =
+    if depth > max_depth then true
+    else if v.shift <> view_shift then false
+    else
+      match v.root with
+      | View { base; _ } -> loop depth base
+      | Append { left; right } -> loop (depth + 1) left || loop (depth + 1) right
+      | _ -> invalid_arg "corrupt vector"
+  in
+  loop 0 v
+
+let fold_left_iterative f acc v =
+  let stack = ref (Array.make 16 v) in
+  let stack_length = ref 1 in
+  let push value =
+    if !stack_length = Array.length !stack then (
+      let stack' = Array.make (!stack_length * 2) value in
+      Array.blit !stack 0 stack' 0 !stack_length;
+      stack := stack');
+    Array.unsafe_set !stack !stack_length value;
+    incr stack_length
+  in
+  let pop () =
+    decr stack_length;
+    Array.unsafe_get !stack !stack_length
+  in
+  let acc = ref acc in
+  while !stack_length > 0 do
+    let v = pop () in
+    if v.shift <> view_shift then acc := fold_materialized f !acc v
+    else
+      match v.root with
+      | View { base; start } -> acc := fold_range f !acc base start (start + v.count)
+      | Append { left; right } ->
+          push right;
+          push left
+      | _ -> invalid_arg "corrupt vector"
+  done;
+  !acc
+
+let rec fold_left_recursive f acc v =
+  if v.shift <> view_shift then fold_materialized f acc v
   else
     match v.root with
-    | View { base; start } ->
-        let stop = start + v.count in
-        let rec loop i acc =
-          if i = stop then acc else loop (i + 1) (f acc (get base i))
-        in
-        loop start acc
-    | Append { left; right } -> fold_left f (fold_left f acc left) right
+    | View { base; start } -> fold_range f acc base start (start + v.count)
+    | Append { left; right } -> fold_left_recursive f (fold_left_recursive f acc left) right
     | _ -> invalid_arg "corrupt vector"
+
+let fold_left f acc v =
+  if v.count > 128_000 && append_depth_exceeds v 128_000 then
+    fold_left_iterative f acc v
+  else fold_left_recursive f acc v
 
 let map f v = fold_left (fun acc value -> push acc (f value)) empty v
 
@@ -263,6 +333,102 @@ let concat left right =
     root = Append { left; right };
   }
 
-let of_list values = List.fold_left push empty values
+let root_shift_for_tailoff tailoff =
+  let leaves = tailoff lsr bits in
+  let rec loop shift =
+    if leaves <= (1 lsl shift) then shift else loop (shift + bits)
+  in
+  loop bits
 
-let to_list v = List.init v.count (get v)
+let rec node_of_array_range values start stop level =
+  let children = Array.make width Empty in
+  let child_span = 1 lsl level in
+  for child_index = 0 to width - 1 do
+    let child_start = start + (child_index * child_span) in
+    if child_start < stop then (
+      let child_stop = min stop (child_start + child_span) in
+      let child =
+        if level = bits then
+          Leaf (Array.sub values child_start (child_stop - child_start))
+        else node_of_array_range values child_start child_stop (level - bits)
+      in
+      Array.unsafe_set children child_index child)
+  done;
+  Branch children
+
+let of_array values =
+  let count = Array.length values in
+  if count = 0 then empty
+  else
+    let tail_start = tailoff count in
+    let shift = root_shift_for_tailoff tail_start in
+    let root =
+      if tail_start = 0 then Empty else node_of_array_range values 0 tail_start shift
+    in
+    let tail = Array.sub values tail_start (count - tail_start) in
+    { count; shift; root; tail; tailoff = tail_start }
+
+let blit_materialized_range dst dst_pos v start stop =
+  let rec loop index dst_pos =
+    if index < stop then (
+      let values = array_for v index in
+      let offset = index land mask in
+      let length = min (Array.length values - offset) (stop - index) in
+      Array.blit values offset dst dst_pos length;
+      loop (index + length) (dst_pos + length))
+  in
+  loop start dst_pos
+
+let blit_to_array dst v =
+  let first_job = (v, 0, v.count, 0) in
+  let stack = ref (Array.make 16 first_job) in
+  let stack_length = ref 1 in
+  let push value =
+    if !stack_length = Array.length !stack then (
+      let stack' = Array.make (!stack_length * 2) value in
+      Array.blit !stack 0 stack' 0 !stack_length;
+      stack := stack');
+    Array.unsafe_set !stack !stack_length value;
+    incr stack_length
+  in
+  let pop () =
+    decr stack_length;
+    Array.unsafe_get !stack !stack_length
+  in
+  while !stack_length > 0 do
+    let v, start, stop, dst_pos = pop () in
+    if start <> stop then
+      if v.shift <> view_shift then blit_materialized_range dst dst_pos v start stop
+      else
+        match v.root with
+        | View { base; start = base_start } ->
+            push (base, base_start + start, base_start + stop, dst_pos)
+        | Append { left; right } ->
+            if stop <= left.count then push (left, start, stop, dst_pos)
+            else if start >= left.count then
+              push (right, start - left.count, stop - left.count, dst_pos)
+            else (
+              let left_length = left.count - start in
+              push (right, 0, stop - left.count, dst_pos + left_length);
+              push (left, start, left.count, dst_pos))
+        | _ -> invalid_arg "corrupt vector"
+  done
+
+let to_array v =
+  if v.count = 0 then [||]
+  else
+    let values = Array.make v.count (get v 0) in
+    blit_to_array values v;
+    values
+
+let of_list values = of_array (Array.of_list values)
+
+let to_list v = Array.to_list (to_array v)
+
+let of_seq values = Seq.fold_left push empty values
+
+let to_seq v =
+  let rec next index () =
+    if index = v.count then Seq.Nil else Seq.Cons (get v index, next (index + 1))
+  in
+  next 0

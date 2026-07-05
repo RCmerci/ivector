@@ -74,6 +74,13 @@ let list_take count values =
 
 let list_sub values start length = list_drop start values |> list_take length
 
+let dynarray_sub values start length =
+  Dynarray.init length (fun i -> Dynarray.get values (start + i))
+
+let concat_nonempty combine = function
+  | [] -> invalid_arg "expected at least one chunk"
+  | first :: rest -> List.fold_left combine first rest
+
 let sum_array values = Array.fold_left ( + ) 0 values
 
 let sum_dynarray values =
@@ -84,6 +91,26 @@ let sum_dynarray values =
   !sum
 
 let sum_ivector values = Ivector.fold_left ( + ) 0 values
+
+let update_array values indices =
+  let values = Array.copy values in
+  Array.iteri (fun i index -> values.(index) <- -(i + 1)) indices;
+  values
+
+let update_dynarray values indices =
+  let values = Dynarray.copy values in
+  Array.iteri (fun i index -> Dynarray.set values index (-(i + 1))) indices;
+  values
+
+let update_list values indices =
+  let values = ref values in
+  Array.iteri (fun i index -> values := list_set index (-(i + 1)) !values) indices;
+  !values
+
+let update_ivector values indices =
+  let values = ref values in
+  Array.iteri (fun i index -> values := Ivector.set !values index (-(i + 1))) indices;
+  !values
 
 let bench_build config =
   let list_values =
@@ -201,7 +228,7 @@ let bench_subvec_concat config (list_values, array_values, dynarray_values, ivec
   check "array subvec sum" expected_slice_sum (sum_array array_slice);
   let dynarray_slice =
     time "Dynarray subvec (init/get)" (fun () ->
-        Dynarray.init slice_length (fun i -> Dynarray.get dynarray_values (start + i)))
+        dynarray_sub dynarray_values start slice_length)
   in
   check "Dynarray subvec length" slice_length (Dynarray.length dynarray_slice);
   check "Dynarray subvec sum" expected_slice_sum (sum_dynarray dynarray_slice);
@@ -215,10 +242,8 @@ let bench_subvec_concat config (list_values, array_values, dynarray_values, ivec
   let list_right = list_sub list_values half (config.size - half) in
   let array_left = Array.sub array_values 0 half in
   let array_right = Array.sub array_values half (config.size - half) in
-  let dynarray_left = Dynarray.init half (fun i -> Dynarray.get dynarray_values i) in
-  let dynarray_right =
-    Dynarray.init (config.size - half) (fun i -> Dynarray.get dynarray_values (half + i))
-  in
+  let dynarray_left = dynarray_sub dynarray_values 0 half in
+  let dynarray_right = dynarray_sub dynarray_values half (config.size - half) in
   let ivector_left = Ivector.subvec ivector_values 0 half in
   let ivector_right = Ivector.subvec ivector_values half config.size in
   let expected_concat_sum = config.size * (config.size - 1) / 2 in
@@ -245,6 +270,194 @@ let bench_subvec_concat config (list_values, array_values, dynarray_values, ivec
   in
   check "Ivector concat length" config.size (Ivector.length ivector_concat);
   check "Ivector concat sum" expected_concat_sum (sum_ivector ivector_concat)
+
+let chunk_bounds size chunks =
+  let base = size / chunks in
+  let remainder = size mod chunks in
+  let rec loop index start acc =
+    if index = chunks then List.rev acc
+    else
+      let length = base + if index < remainder then 1 else 0 in
+      loop (index + 1) (start + length) ((start, length) :: acc)
+  in
+  loop 0 0 []
+
+let bench_read_write_after label config length
+    (list_values, array_values, dynarray_values, ivector_values) =
+  let check name expected actual =
+    if expected <> actual then failwith (name ^ ": unexpected value")
+  in
+  let expected_sequential_sum = sum_array array_values in
+  check ("array " ^ label ^ " sequential read") expected_sequential_sum
+    (time ("array " ^ label ^ " sequential read") (fun () ->
+         sum_array array_values));
+  check ("Dynarray " ^ label ^ " sequential read") expected_sequential_sum
+    (time ("Dynarray " ^ label ^ " sequential read") (fun () ->
+         sum_dynarray dynarray_values));
+  check ("Ivector " ^ label ^ " sequential read") expected_sequential_sum
+    (time ("Ivector " ^ label ^ " sequential read") (fun () ->
+         sum_ivector ivector_values));
+  check ("list " ^ label ^ " sequential read") expected_sequential_sum
+    (time ("list " ^ label ^ " sequential read") (fun () ->
+         List.fold_left ( + ) 0 list_values));
+  let ivector_list =
+    time ("Ivector " ^ label ^ " to_list") (fun () ->
+        Ivector.to_list ivector_values)
+  in
+  check ("Ivector " ^ label ^ " to_list length") length (List.length ivector_list);
+  check ("Ivector " ^ label ^ " to_list sum") expected_sequential_sum
+    (List.fold_left ( + ) 0 ivector_list);
+  let read_indices = make_indices config.reads length in
+  let expected_read_sum = array_random_sum array_values read_indices in
+  check ("array " ^ label ^ " random read") expected_read_sum
+    (time ("array " ^ label ^ " random read") (fun () ->
+         array_random_sum array_values read_indices));
+  check ("Dynarray " ^ label ^ " random read") expected_read_sum
+    (time ("Dynarray " ^ label ^ " random read") (fun () ->
+         dynarray_random_sum dynarray_values read_indices));
+  check ("Ivector " ^ label ^ " random read") expected_read_sum
+    (time ("Ivector " ^ label ^ " random read") (fun () ->
+         ivector_random_sum ivector_values read_indices));
+  check ("list " ^ label ^ " random read") expected_read_sum
+    (time ("list " ^ label ^ " random read") (fun () ->
+         list_random_sum list_values read_indices));
+  let update_indices = make_indices config.updates length in
+  let array_updated =
+    time ("array " ^ label ^ " set") (fun () ->
+        update_array array_values update_indices)
+  in
+  let expected_update_sum = sum_array array_updated in
+  let dynarray_updated =
+    time ("Dynarray " ^ label ^ " set") (fun () ->
+        update_dynarray dynarray_values update_indices)
+  in
+  check ("Dynarray " ^ label ^ " set") expected_update_sum
+    (sum_dynarray dynarray_updated);
+  let ivector_updated =
+    time ("Ivector " ^ label ^ " set") (fun () ->
+        update_ivector ivector_values update_indices)
+  in
+  check ("Ivector " ^ label ^ " set") expected_update_sum
+    (sum_ivector ivector_updated);
+  let list_updated =
+    time ("list " ^ label ^ " set") (fun () ->
+        update_list list_values update_indices)
+  in
+  check ("list " ^ label ^ " set") expected_update_sum
+    (List.fold_left ( + ) 0 list_updated)
+
+let bench_repeated_concat_subvec config
+    (list_values, array_values, dynarray_values, ivector_values) =
+  let check name expected actual =
+    if expected <> actual then failwith (name ^ ": unexpected value")
+  in
+  let chunks = min 8 config.size in
+  let bounds = chunk_bounds config.size chunks in
+  let list_concat =
+    time "list repeated concat build" (fun () ->
+        bounds
+        |> List.map (fun (start, length) -> list_sub list_values start length)
+        |> concat_nonempty ( @ ))
+  in
+  let array_concat =
+    time "array repeated concat build" (fun () ->
+        bounds
+        |> List.map (fun (start, length) -> Array.sub array_values start length)
+        |> concat_nonempty Array.append)
+  in
+  let dynarray_concat =
+    time "Dynarray repeated concat build" (fun () ->
+        bounds
+        |> List.map (fun (start, length) -> dynarray_sub dynarray_values start length)
+        |> concat_nonempty (fun left right ->
+               let values = Dynarray.copy left in
+               Dynarray.append values right;
+               values))
+  in
+  let ivector_concat =
+    time "Ivector repeated concat build" (fun () ->
+        bounds
+        |> List.map (fun (start, length) ->
+               Ivector.subvec ivector_values start (start + length))
+        |> concat_nonempty Ivector.concat)
+  in
+  check "list repeated concat length" config.size (List.length list_concat);
+  check "array repeated concat length" config.size (Array.length array_concat);
+  check "Dynarray repeated concat length" config.size
+    (Dynarray.length dynarray_concat);
+  check "Ivector repeated concat length" config.size
+    (Ivector.length ivector_concat);
+  bench_read_write_after "repeated concat" config config.size
+    (list_concat, array_concat, dynarray_concat, ivector_concat);
+  print_endline "";
+  let subvec_steps = min 8 ((config.size - 1) / 2) in
+  let final_length = config.size - (2 * subvec_steps) in
+  let list_subvec =
+    time "list repeated subvec build" (fun () ->
+        let rec loop steps length values =
+          if steps = 0 then values
+          else loop (steps - 1) (length - 2) (list_sub values 1 (length - 2))
+        in
+        loop subvec_steps config.size list_values)
+  in
+  let array_subvec =
+    time "array repeated subvec build" (fun () ->
+        let rec loop steps length values =
+          if steps = 0 then values
+          else loop (steps - 1) (length - 2) (Array.sub values 1 (length - 2))
+        in
+        loop subvec_steps config.size array_values)
+  in
+  let dynarray_subvec =
+    time "Dynarray repeated subvec build" (fun () ->
+        let rec loop steps length values =
+          if steps = 0 then values
+          else loop (steps - 1) (length - 2) (dynarray_sub values 1 (length - 2))
+        in
+        loop subvec_steps config.size dynarray_values)
+  in
+  let ivector_subvec =
+    time "Ivector repeated subvec build" (fun () ->
+        let rec loop steps values =
+          if steps = 0 then values
+          else
+            let length = Ivector.length values in
+            loop (steps - 1) (Ivector.subvec values 1 (length - 1))
+        in
+        loop subvec_steps ivector_values)
+  in
+  check "list repeated subvec length" final_length (List.length list_subvec);
+  check "array repeated subvec length" final_length (Array.length array_subvec);
+  check "Dynarray repeated subvec length" final_length
+    (Dynarray.length dynarray_subvec);
+  check "Ivector repeated subvec length" final_length
+    (Ivector.length ivector_subvec);
+  bench_read_write_after "repeated subvec" config final_length
+    (list_subvec, array_subvec, dynarray_subvec, ivector_subvec)
+
+let bench_deep_concat config =
+  let check name expected actual =
+    if expected <> actual then failwith (name ^ ": unexpected value")
+  in
+  let size = min config.size 100_000 in
+  let expected_sum = size * (size - 1) / 2 in
+  let values =
+    time "Ivector deep concat build" (fun () ->
+        let rec loop i values =
+          if i = size then values
+          else loop (i + 1) (Ivector.concat values (Ivector.push Ivector.empty i))
+        in
+        loop 0 Ivector.empty)
+  in
+  check "Ivector deep concat length" size (Ivector.length values);
+  check "Ivector deep concat sequential read" expected_sum
+    (time "Ivector deep concat sequential read" (fun () -> sum_ivector values));
+  let values_list =
+    time "Ivector deep concat to_list" (fun () -> Ivector.to_list values)
+  in
+  check "Ivector deep concat to_list length" size (List.length values_list);
+  check "Ivector deep concat to_list sum" expected_sum
+    (List.fold_left ( + ) 0 values_list)
 
 let bench_push_pop config =
   ignore
@@ -285,5 +498,9 @@ let () =
   bench_updates config values;
   print_endline "";
   bench_subvec_concat config values;
+  print_endline "";
+  bench_repeated_concat_subvec config values;
+  print_endline "";
+  bench_deep_concat config;
   print_endline "";
   bench_push_pop config

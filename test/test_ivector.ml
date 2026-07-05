@@ -10,6 +10,14 @@ let check_int name expected actual =
 let check_list name expected actual =
   if expected <> actual then failwith name
 
+let check_array name expected actual =
+  if expected <> actual then
+    failwith
+      (Printf.sprintf "%s: expected [%s], got [%s]" name
+         (String.concat "; "
+            (Array.to_list (Array.map string_of_int expected)))
+         (String.concat "; " (Array.to_list (Array.map string_of_int actual))))
+
 let check_raises_invalid_arg name f =
   match f () with
   | exception Invalid_argument _ -> ()
@@ -93,6 +101,104 @@ let test_large_roundtrip () =
   check_int "large last" 99_999 (get v 99_999);
   check_list "large roundtrip" values (to_list v)
 
+let test_of_list_large_allocation_uses_array_conversion () =
+  let size = 100_000 in
+  let values = range size in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let v = of_list values in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large of_list length" size (length v);
+  check_int "large of_list last" (size - 1) (get v (size - 1));
+  check "large of_list allocation"
+    (allocated < (float_of_int size *. 40.0))
+
+let test_of_array_and_to_array_roundtrip () =
+  List.iter
+    (fun size ->
+      let values = Array.init size Fun.id in
+      let v = of_array values in
+      check_int "of_array length" size (length v);
+      check_array "to_array roundtrip" values (to_array v);
+      for i = 0 to size - 1 do
+        check_int "get after of_array" i (get v i)
+      done)
+    [ 0; 1; 31; 32; 33; 1023; 1024; 1025 ]
+
+let test_array_conversions_do_not_share_mutable_storage () =
+  let values = [| 1; 2; 3 |] in
+  let v = of_array values in
+  values.(1) <- 99;
+  check_array "of_array copies input" [| 1; 2; 3 |] (to_array v);
+  let exported = to_array v in
+  exported.(2) <- 77;
+  check_int "to_array copies output" 3 (get v 2)
+
+let test_of_array_large_allocation_is_linear_in_array_storage () =
+  let size = 100_000 in
+  let values = Array.init size Fun.id in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let v = of_array values in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large of_array length" size (length v);
+  check_int "large of_array last" (size - 1) (get v (size - 1));
+  check "large of_array allocation"
+    (allocated < (float_of_int size *. 80.0))
+
+let test_to_array_large_allocation_avoids_intermediate_list () =
+  let size = 100_000 in
+  let v = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let values = to_array v in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large to_array length" size (Array.length values);
+  check_int "large to_array last" (size - 1) values.(size - 1);
+  check "large to_array allocation"
+    (allocated < (float_of_int size *. 16.0))
+
+let test_to_array_supports_views () =
+  let base = of_array (Array.init 80 Fun.id) in
+  check_array "subvec to_array"
+    (Array.init 53 (fun i -> i + 17))
+    (to_array (subvec base 17 70));
+  check_array "concat to_array" (Array.init 80 Fun.id)
+    (to_array (concat (subvec base 0 40) (subvec base 40 80)))
+
+let test_of_seq_and_to_seq_roundtrip () =
+  List.iter
+    (fun size ->
+      let values = range size in
+      let v = of_seq (List.to_seq values) in
+      check_int "of_seq length" size (length v);
+      check_list "to_seq roundtrip" values (List.of_seq (to_seq v));
+      for i = 0 to size - 1 do
+        check_int "get after of_seq" i (get v i)
+      done)
+    [ 0; 1; 31; 32; 33; 1023; 1024; 1025 ]
+
+let test_of_seq_consumes_input_once_in_order () =
+  let next = ref 0 in
+  let rec values () =
+    if !next = 40 then Seq.Nil
+    else
+      let value = !next in
+      incr next;
+      Seq.Cons (value, values)
+  in
+  let v = of_seq values in
+  check_int "of_seq consumes input once" 40 !next;
+  check_list "of_seq input order" (range 40) (to_list v)
+
+let test_to_seq_supports_views () =
+  let base = of_array (Array.init 80 Fun.id) in
+  check_list "subvec to_seq"
+    (List.init 53 (fun i -> i + 17))
+    (List.of_seq (to_seq (subvec base 17 70)));
+  check_list "concat to_seq" (range 80)
+    (List.of_seq (to_seq (concat (subvec base 0 40) (subvec base 40 80))))
+
 let test_fold_left_visits_values_in_order () =
   let v = of_list (range 1050) in
   let visited = fold_left (fun acc value -> value :: acc) [] v |> List.rev in
@@ -173,6 +279,32 @@ let test_views_support_vector_operations () =
     (List.mapi (fun i value -> if i = 45 then 666 else value) (range 80))
     (to_list (set combined 45 666))
 
+let test_deep_concat_traversal_is_stack_safe () =
+  let size = 100_000 in
+  let combined =
+    let rec loop i acc =
+      if i = size then acc else loop (i + 1) (concat acc (of_list [ i ]))
+    in
+    loop 0 empty
+  in
+  check_int "deep concat length" size (length combined);
+  check_int "deep concat fold_left sum" 4_999_950_000
+    (fold_left ( + ) 0 combined);
+  check_int "deep concat to_list head" 0 (List.hd (to_list combined))
+
+let test_deep_concat_to_array_is_stack_safe () =
+  let size = 100_000 in
+  let combined =
+    let rec loop i acc =
+      if i = size then acc else loop (i + 1) (concat acc (of_list [ i ]))
+    in
+    loop 0 empty
+  in
+  let values = to_array combined in
+  check_int "deep concat to_array length" size (Array.length values);
+  check_int "deep concat to_array head" 0 values.(0);
+  check_int "deep concat to_array last" (size - 1) values.(size - 1)
+
 let () =
   List.iter
     (fun (name, test) ->
@@ -190,6 +322,18 @@ let () =
       ("pop_and_peek_across_boundaries", test_pop_and_peek_across_boundaries);
       ("invalid_indices", test_invalid_indices);
       ("large_roundtrip", test_large_roundtrip);
+      ("of_list_large_allocation_uses_array_conversion", test_of_list_large_allocation_uses_array_conversion);
+      ("of_array_and_to_array_roundtrip", test_of_array_and_to_array_roundtrip);
+      ( "array_conversions_do_not_share_mutable_storage",
+        test_array_conversions_do_not_share_mutable_storage );
+      ( "of_array_large_allocation_is_linear_in_array_storage",
+        test_of_array_large_allocation_is_linear_in_array_storage );
+      ( "to_array_large_allocation_avoids_intermediate_list",
+        test_to_array_large_allocation_avoids_intermediate_list );
+      ("to_array_supports_views", test_to_array_supports_views);
+      ("of_seq_and_to_seq_roundtrip", test_of_seq_and_to_seq_roundtrip);
+      ("of_seq_consumes_input_once_in_order", test_of_seq_consumes_input_once_in_order);
+      ("to_seq_supports_views", test_to_seq_supports_views);
       ("fold_left_visits_values_in_order", test_fold_left_visits_values_in_order);
       ("fold_left_empty_keeps_accumulator", test_fold_left_empty_keeps_accumulator);
       ("map_preserves_order_and_length", test_map_preserves_order_and_length);
@@ -199,4 +343,6 @@ let () =
       ("concat_preserves_order_and_operands", test_concat_preserves_order_and_operands);
       ("concat_handles_empty_vectors", test_concat_handles_empty_vectors);
       ("views_support_vector_operations", test_views_support_vector_operations);
+      ("deep_concat_traversal_is_stack_safe", test_deep_concat_traversal_is_stack_safe);
+      ("deep_concat_to_array_is_stack_safe", test_deep_concat_to_array_is_stack_safe);
     ]
