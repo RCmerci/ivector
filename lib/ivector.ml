@@ -93,6 +93,94 @@ let rec new_path level leaf =
     Array.unsafe_set children 0 (new_path (level - bits) leaf);
     Branch children
 
+let root_shift_for_tailoff tailoff =
+  let leaves = tailoff lsr bits in
+  let rec loop shift =
+    if leaves <= (1 lsl shift) then shift else loop (shift + bits)
+  in
+  loop bits
+
+let rec node_of_array_range values start stop level =
+  let children = Array.make width Empty in
+  let child_span = 1 lsl level in
+  for child_index = 0 to width - 1 do
+    let child_start = start + (child_index * child_span) in
+    if child_start < stop then (
+      let child_stop = min stop (child_start + child_span) in
+      let child =
+        if level = bits then
+          Leaf (Array.sub values child_start (child_stop - child_start))
+        else node_of_array_range values child_start child_stop (level - bits)
+      in
+      Array.unsafe_set children child_index child)
+  done;
+  Branch children
+
+let of_array values =
+  let count = Array.length values in
+  if count = 0 then empty
+  else
+    let tail_start = tailoff count in
+    let shift = root_shift_for_tailoff tail_start in
+    let root =
+      if tail_start = 0 then Empty else node_of_array_range values 0 tail_start shift
+    in
+    let tail = Array.sub values tail_start (count - tail_start) in
+    { count; shift; root; tail; tailoff = tail_start }
+
+let blit_materialized_range dst dst_pos v start stop =
+  let rec loop index dst_pos =
+    if index < stop then (
+      let values = array_for v index in
+      let offset = index land mask in
+      let length = min (Array.length values - offset) (stop - index) in
+      Array.blit values offset dst dst_pos length;
+      loop (index + length) (dst_pos + length))
+  in
+  loop start dst_pos
+
+let blit_to_array dst v =
+  let first_job = (v, 0, v.count, 0) in
+  let stack = ref (Array.make 16 first_job) in
+  let stack_length = ref 1 in
+  let push value =
+    if !stack_length = Array.length !stack then (
+      let stack' = Array.make (!stack_length * 2) value in
+      Array.blit !stack 0 stack' 0 !stack_length;
+      stack := stack');
+    Array.unsafe_set !stack !stack_length value;
+    incr stack_length
+  in
+  let pop () =
+    decr stack_length;
+    Array.unsafe_get !stack !stack_length
+  in
+  while !stack_length > 0 do
+    let v, start, stop, dst_pos = pop () in
+    if start <> stop then
+      if v.shift <> view_shift then blit_materialized_range dst dst_pos v start stop
+      else
+        match v.root with
+        | View { base; start = base_start } ->
+            push (base, base_start + start, base_start + stop, dst_pos)
+        | Append { left; right } ->
+            if stop <= left.count then push (left, start, stop, dst_pos)
+            else if start >= left.count then
+              push (right, start - left.count, stop - left.count, dst_pos)
+            else (
+              let left_length = left.count - start in
+              push (right, 0, stop - left.count, dst_pos + left_length);
+              push (left, start, left.count, dst_pos))
+        | _ -> invalid_arg "corrupt vector"
+  done
+
+let to_array v =
+  if v.count = 0 then [||]
+  else
+    let values = Array.make v.count (get v 0) in
+    blit_to_array values v;
+    values
+
 let rec push_tail count level parent tail_leaf =
   let children =
     match parent with
@@ -136,10 +224,7 @@ let rec push v value =
       { count; shift; root; tail = [| value |]; tailoff = tailoff count }
 
 and materialize v =
-  let rec loop index acc =
-    if index = v.count then acc else loop (index + 1) (push acc (get v index))
-  in
-  loop 0 empty
+  of_array (to_array v)
 
 let rec set v index value =
   if index < 0 || index > v.count then invalid_index ();
@@ -332,94 +417,6 @@ let concat left right =
     tailoff = max_int;
     root = Append { left; right };
   }
-
-let root_shift_for_tailoff tailoff =
-  let leaves = tailoff lsr bits in
-  let rec loop shift =
-    if leaves <= (1 lsl shift) then shift else loop (shift + bits)
-  in
-  loop bits
-
-let rec node_of_array_range values start stop level =
-  let children = Array.make width Empty in
-  let child_span = 1 lsl level in
-  for child_index = 0 to width - 1 do
-    let child_start = start + (child_index * child_span) in
-    if child_start < stop then (
-      let child_stop = min stop (child_start + child_span) in
-      let child =
-        if level = bits then
-          Leaf (Array.sub values child_start (child_stop - child_start))
-        else node_of_array_range values child_start child_stop (level - bits)
-      in
-      Array.unsafe_set children child_index child)
-  done;
-  Branch children
-
-let of_array values =
-  let count = Array.length values in
-  if count = 0 then empty
-  else
-    let tail_start = tailoff count in
-    let shift = root_shift_for_tailoff tail_start in
-    let root =
-      if tail_start = 0 then Empty else node_of_array_range values 0 tail_start shift
-    in
-    let tail = Array.sub values tail_start (count - tail_start) in
-    { count; shift; root; tail; tailoff = tail_start }
-
-let blit_materialized_range dst dst_pos v start stop =
-  let rec loop index dst_pos =
-    if index < stop then (
-      let values = array_for v index in
-      let offset = index land mask in
-      let length = min (Array.length values - offset) (stop - index) in
-      Array.blit values offset dst dst_pos length;
-      loop (index + length) (dst_pos + length))
-  in
-  loop start dst_pos
-
-let blit_to_array dst v =
-  let first_job = (v, 0, v.count, 0) in
-  let stack = ref (Array.make 16 first_job) in
-  let stack_length = ref 1 in
-  let push value =
-    if !stack_length = Array.length !stack then (
-      let stack' = Array.make (!stack_length * 2) value in
-      Array.blit !stack 0 stack' 0 !stack_length;
-      stack := stack');
-    Array.unsafe_set !stack !stack_length value;
-    incr stack_length
-  in
-  let pop () =
-    decr stack_length;
-    Array.unsafe_get !stack !stack_length
-  in
-  while !stack_length > 0 do
-    let v, start, stop, dst_pos = pop () in
-    if start <> stop then
-      if v.shift <> view_shift then blit_materialized_range dst dst_pos v start stop
-      else
-        match v.root with
-        | View { base; start = base_start } ->
-            push (base, base_start + start, base_start + stop, dst_pos)
-        | Append { left; right } ->
-            if stop <= left.count then push (left, start, stop, dst_pos)
-            else if start >= left.count then
-              push (right, start - left.count, stop - left.count, dst_pos)
-            else (
-              let left_length = left.count - start in
-              push (right, 0, stop - left.count, dst_pos + left_length);
-              push (left, start, left.count, dst_pos))
-        | _ -> invalid_arg "corrupt vector"
-  done
-
-let to_array v =
-  if v.count = 0 then [||]
-  else
-    let values = Array.make v.count (get v 0) in
-    blit_to_array values v;
-    values
 
 let of_list values = of_array (Array.of_list values)
 

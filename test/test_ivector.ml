@@ -18,6 +18,12 @@ let check_array name expected actual =
             (Array.to_list (Array.map string_of_int expected)))
          (String.concat "; " (Array.to_list (Array.map string_of_int actual))))
 
+let check_allocated_less_than name limit actual =
+  if not (actual < limit) then
+    failwith
+      (Printf.sprintf "%s: expected < %.0f bytes, got %.0f bytes" name limit
+         actual)
+
 let check_raises_invalid_arg name f =
   match f () with
   | exception Invalid_argument _ -> ()
@@ -165,6 +171,19 @@ let test_to_array_supports_views () =
     (to_array (subvec base 17 70));
   check_array "concat to_array" (Array.init 80 Fun.id)
     (to_array (concat (subvec base 0 40) (subvec base 40 80)))
+
+let test_materializing_view_for_push_uses_linear_array_storage () =
+  let size = 100_000 in
+  let view = subvec (of_array (Array.init size Fun.id)) 0 size in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let pushed = push view (-1) in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "materialized view push length" (size + 1) (length pushed);
+  check_int "materialized view push last" (-1) (peek pushed);
+  check_allocated_less_than "materialized view push allocation"
+    (float_of_int size *. 100.0)
+    allocated
 
 let test_of_seq_and_to_seq_roundtrip () =
   List.iter
@@ -331,6 +350,8 @@ let () =
       ( "to_array_large_allocation_avoids_intermediate_list",
         test_to_array_large_allocation_avoids_intermediate_list );
       ("to_array_supports_views", test_to_array_supports_views);
+      ( "materializing_view_for_push_uses_linear_array_storage",
+        test_materializing_view_for_push_uses_linear_array_storage );
       ("of_seq_and_to_seq_roundtrip", test_of_seq_and_to_seq_roundtrip);
       ("of_seq_consumes_input_once_in_order", test_of_seq_consumes_input_once_in_order);
       ("to_seq_supports_views", test_to_seq_supports_views);
