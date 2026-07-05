@@ -2,6 +2,8 @@ let bits = 5
 let view_shift = -1
 let width = 1 lsl bits
 let mask = width - 1
+let append_balance_slack = 8
+let append_chunk_limit = 1024
 
 type 'a node =
   | Empty
@@ -15,18 +17,52 @@ and 'a t = {
   root : 'a node;
   tail : 'a array;
   tailoff : int;
+  append_height : int;
+  append_leaves : int;
 }
 
-let empty = { count = 0; shift = bits; root = Empty; tail = [||]; tailoff = 0 }
+let empty =
+  {
+    count = 0;
+    shift = bits;
+    root = Empty;
+    tail = [||];
+    tailoff = 0;
+    append_height = 0;
+    append_leaves = 1;
+  }
 
 let length v = v.count
 
 let is_empty v = v.count = 0
 
+let append_balanced height leaves =
+  let excess = height - append_balance_slack in
+  excess <= 0
+  || (excess < Sys.int_size && leaves > (1 lsl (excess - 1)))
+
 let tailoff count =
   if count < width then 0 else ((count - 1) lsr bits) lsl bits
 
 let invalid_index () = invalid_arg "index out of bounds"
+
+let make_materialized ~count ~shift ~root ~tail ~tailoff =
+  { count; shift; root; tail; tailoff; append_height = 0; append_leaves = 1 }
+
+let raw_append left right append_height append_leaves =
+  {
+    count = left.count + right.count;
+    shift = view_shift;
+    root = Append { left; right };
+    tail = [||];
+    tailoff = max_int;
+    append_height;
+    append_leaves;
+  }
+
+let append_metadata left right =
+  ( 1 + max left.append_height right.append_height,
+    left.append_leaves + right.append_leaves )
 
 let rec array_for_node index level node =
   match node with
@@ -126,7 +162,7 @@ let of_array values =
       if tail_start = 0 then Empty else node_of_array_range values 0 tail_start shift
     in
     let tail = Array.sub values tail_start (count - tail_start) in
-    { count; shift; root; tail; tailoff = tail_start }
+    make_materialized ~count ~shift ~root ~tail ~tailoff:tail_start
 
 let blit_materialized_range dst dst_pos v start stop =
   let rec loop index dst_pos =
@@ -210,7 +246,7 @@ let rec push v value =
   else
     let count = v.count + 1 in
     if Array.length v.tail < width then
-      { v with count; tail = append_tail v.tail value; tailoff = tailoff count }
+      { v with count; tail = append_tail v.tail value }
     else
       let tail_leaf = Leaf v.tail in
       let root, shift =
@@ -221,10 +257,100 @@ let rec push v value =
           (Branch children, v.shift + bits)
         else (push_tail v.count v.shift v.root tail_leaf, v.shift)
       in
-      { count; shift; root; tail = [| value |]; tailoff = tailoff count }
+      make_materialized ~count ~shift ~root ~tail:[| value |] ~tailoff:(tailoff count)
 
 and materialize v =
   of_array (to_array v)
+
+let append_materialized_chunk_if_room left right =
+  if
+    left.shift <> view_shift && right.shift <> view_shift && right.count <= width
+    && left.count + right.count <= append_chunk_limit
+  then
+    let rec loop index acc =
+      if index = right.count then acc
+      else loop (index + 1) (push acc (Array.unsafe_get right.tail index))
+    in
+    Some (loop 0 left)
+  else None
+
+let rec collect_append_leaves v acc =
+  if v.shift <> view_shift then v :: acc
+  else
+    match v.root with
+    | Append { left; right } ->
+        collect_append_leaves left (collect_append_leaves right acc)
+    | View _ -> v :: acc
+    | _ -> invalid_arg "corrupt vector"
+
+let rec make_append left right =
+  if left.count = 0 then right
+  else if right.count = 0 then left
+  else
+    match append_small_to_rightmost left right with
+    | Some merged -> merged
+    | None ->
+        let append_height, append_leaves = append_metadata left right in
+        if append_balanced append_height append_leaves then
+          raw_append left right append_height append_leaves
+        else rebalance_append left right
+
+and append_small_to_rightmost left right =
+  if right.shift = view_shift || right.count > width then None
+  else if left.shift <> view_shift then append_materialized_chunk_if_room left right
+  else
+    match left.root with
+    | Append { left = left_left; right = left_right } -> (
+        match append_small_to_rightmost left_right right with
+        | None -> None
+        | Some merged_right -> Some (make_append left_left merged_right))
+    | View _ -> None
+    | _ -> invalid_arg "corrupt vector"
+
+and rebalance_append left right =
+  if left.append_height > right.append_height then
+    match left.root with
+    | Append { left = left_left; right = left_right }
+      when left.shift = view_shift ->
+        make_append left_left (make_append left_right right)
+    | _ -> rebuild_append left right
+  else
+    match right.root with
+    | Append { left = right_left; right = right_right }
+      when right.shift = view_shift ->
+        make_append (make_append left right_left) right_right
+    | _ -> rebuild_append left right
+
+and rebuild_append left right =
+  let leaves =
+    collect_append_leaves left (collect_append_leaves right []) |> Array.of_list
+  in
+  let rec build start length =
+    if length = 1 then Array.unsafe_get leaves start
+    else
+      let left_length = length / 2 in
+      make_append
+        (build start left_length)
+        (build (start + left_length) (length - left_length))
+  in
+  build 0 (Array.length leaves)
+
+let make_view base start count =
+  let base, start =
+    match base.root with
+    | View { base; start = base_start } when base.shift = view_shift ->
+        (base, base_start + start)
+    | _ -> (base, start)
+  in
+  {
+    count;
+    shift = view_shift;
+    root = View { base; start };
+    tail = [||];
+    tailoff = max_int;
+    append_height = 0;
+    append_leaves = 1;
+  }
 
 let rec set v index value =
   if index < 0 || index > v.count then invalid_index ();
@@ -285,7 +411,7 @@ let rec pop v =
           | child -> (child, v.shift - bits))
       | _ -> (root, v.shift)
     in
-    { count; shift; root; tail = new_tail; tailoff = tailoff count }
+    make_materialized ~count ~shift ~root ~tail:new_tail ~tailoff:(tailoff count)
 
 let fold_array = Array.fold_left
 
@@ -338,16 +464,7 @@ let fold_materialized f acc v =
   fold_array f acc v.tail
 
 let append_depth_exceeds v max_depth =
-  let rec loop depth v =
-    if depth > max_depth then true
-    else if v.shift <> view_shift then false
-    else
-      match v.root with
-      | View { base; _ } -> loop depth base
-      | Append { left; right } -> loop (depth + 1) left || loop (depth + 1) right
-      | _ -> invalid_arg "corrupt vector"
-  in
-  loop 0 v
+  v.append_height > max_depth
 
 let fold_left_iterative f acc v =
   let stack = ref (Array.make 16 v) in
@@ -396,27 +513,9 @@ let map f v = fold_left (fun acc value -> push acc (f value)) empty v
 let subvec v start stop =
   if start < 0 || stop < start || stop > v.count then invalid_index ();
   let count = stop - start in
-  let base, start =
-    match v.root with
-    | View { base; start = base_start } -> (base, base_start + start)
-    | _ -> (v, start)
-  in
-  {
-    empty with
-    count;
-    shift = view_shift;
-    tailoff = max_int;
-    root = View { base; start };
-  }
+  make_view v start count
 
-let concat left right =
-  {
-    empty with
-    count = left.count + right.count;
-    shift = view_shift;
-    tailoff = max_int;
-    root = Append { left; right };
-  }
+let concat left right = make_append left right
 
 let of_list values = of_array (Array.of_list values)
 

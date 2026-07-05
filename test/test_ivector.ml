@@ -24,6 +24,10 @@ let check_allocated_less_than name limit actual =
       (Printf.sprintf "%s: expected < %.0f bytes, got %.0f bytes" name limit
          actual)
 
+let check_less_or_equal name limit actual =
+  if actual > limit then
+    failwith (Printf.sprintf "%s: expected <= %d, got %d" name limit actual)
+
 let check_raises_invalid_arg name f =
   match f () with
   | exception Invalid_argument _ -> ()
@@ -34,6 +38,40 @@ let check_raises_invalid_arg name f =
   | _ -> failwith (name ^ ": expected Invalid_argument")
 
 let range n = List.init n Fun.id
+
+let ceil_log2 n =
+  let rec loop power exponent =
+    if power >= n then exponent else loop (power lsl 1) (exponent + 1)
+  in
+  loop 1 0
+
+let append_balance_slack = 8
+
+let append_balance_limit leaves = ceil_log2 leaves + append_balance_slack
+
+let assert_append_balanced name v =
+  let rec loop v =
+    let record = Obj.repr v in
+    let shift = Obj.magic (Obj.field record 1) in
+    if shift <> -1 then (0, 1)
+    else
+      let root = Obj.field record 2 in
+      if Obj.is_int root then (0, 1)
+      else
+        match Obj.tag root with
+        | 2 -> (0, 1)
+        | 3 ->
+            let left = Obj.magic (Obj.field root 0) in
+            let right = Obj.magic (Obj.field root 1) in
+            let left_height, left_leaves = loop left in
+            let right_height, right_leaves = loop right in
+            let height = 1 + max left_height right_height in
+            let leaves = left_leaves + right_leaves in
+            check_less_or_equal name (append_balance_limit leaves) height;
+            (height, leaves)
+        | _ -> (0, 1)
+  in
+  ignore (loop v)
 
 let test_empty () =
   let v = empty in
@@ -324,6 +362,62 @@ let test_deep_concat_to_array_is_stack_safe () =
   check_int "deep concat to_array head" 0 values.(0);
   check_int "deep concat to_array last" (size - 1) values.(size - 1)
 
+let test_left_associated_concat_stays_balanced () =
+  let size = 10_000 in
+  let combined =
+    let rec loop i acc =
+      if i = size then acc else loop (i + 1) (concat acc (of_list [ i ]))
+    in
+    loop 0 empty
+  in
+  assert_append_balanced "left-associated concat append balance" combined;
+  check_int "left-associated concat length" size (length combined);
+  check_int "left-associated concat first" 0 (get combined 0);
+  check_int "left-associated concat middle" (size / 2) (get combined (size / 2));
+  check_int "left-associated concat last" (size - 1) (peek combined);
+  check_list "left-associated concat order" (range size) (to_list combined)
+
+let test_right_associated_concat_stays_balanced () =
+  let size = 10_000 in
+  let combined =
+    let rec loop i acc =
+      if i < 0 then acc else loop (i - 1) (concat (of_list [ i ]) acc)
+    in
+    loop (size - 1) empty
+  in
+  assert_append_balanced "right-associated concat append balance" combined;
+  check_int "right-associated concat length" size (length combined);
+  check_int "right-associated concat first" 0 (get combined 0);
+  check_int "right-associated concat middle" (size / 2) (get combined (size / 2));
+  check_int "right-associated concat last" (size - 1) (peek combined);
+  check_list "right-associated concat order" (range size) (to_list combined)
+
+let test_mixed_subvec_concat_stays_balanced () =
+  let base = of_array (Array.init 12_000 Fun.id) in
+  let combined =
+    let rec loop i acc =
+      if i = 120 then acc
+      else
+        let start = i * 50 in
+        let chunk = subvec base start (start + 50) in
+        loop (i + 1) (concat acc chunk)
+    in
+    loop 0 empty
+  in
+  let expected = List.init 6_000 Fun.id in
+  assert_append_balanced "mixed subvec concat append balance" combined;
+  check_int "mixed subvec concat length" 6_000 (length combined);
+  check_list "mixed subvec concat order" expected (to_list combined);
+  check_list "mixed subvec concat push"
+    (expected @ [ 42_000 ])
+    (to_list (push combined 42_000));
+  check_list "mixed subvec concat pop"
+    (List.init 5_999 Fun.id)
+    (to_list (pop combined));
+  check_list "mixed subvec concat set"
+    (List.mapi (fun i value -> if i = 2_000 then -1 else value) expected)
+    (to_list (set combined 2_000 (-1)))
+
 let () =
   List.iter
     (fun (name, test) ->
@@ -366,4 +460,9 @@ let () =
       ("views_support_vector_operations", test_views_support_vector_operations);
       ("deep_concat_traversal_is_stack_safe", test_deep_concat_traversal_is_stack_safe);
       ("deep_concat_to_array_is_stack_safe", test_deep_concat_to_array_is_stack_safe);
+      ( "left_associated_concat_stays_balanced",
+        test_left_associated_concat_stays_balanced );
+      ( "right_associated_concat_stays_balanced",
+        test_right_associated_concat_stays_balanced );
+      ("mixed_subvec_concat_stays_balanced", test_mixed_subvec_concat_stays_balanced);
     ]
