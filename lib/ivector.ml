@@ -267,11 +267,14 @@ let append_materialized_chunk_if_room left right =
     left.shift <> view_shift && right.shift <> view_shift && right.count <= width
     && left.count + right.count <= append_chunk_limit
   then
-    let rec loop index acc =
-      if index = right.count then acc
-      else loop (index + 1) (push acc (Array.unsafe_get right.tail index))
+    let count = left.count + right.count in
+    let default =
+      if left.count = 0 then Array.unsafe_get right.tail 0 else get left 0
     in
-    Some (loop 0 left)
+    let values = Array.make count default in
+    blit_to_array values left;
+    Array.blit right.tail 0 values left.count right.count;
+    Some (of_array values)
   else None
 
 let rec collect_append_leaves v acc =
@@ -519,9 +522,20 @@ let concat left right = make_append left right
 
 let of_list values = of_array (Array.of_list values)
 
+let append_array v values =
+  if Array.length values = 0 then v else make_append v (of_array values)
+
+let append_list v values =
+  match values with
+  | [] -> v
+  | _ -> append_array v (Array.of_list values)
+
+let append_seq v values =
+  append_array v (Array.of_seq values)
+
 let to_list v = Array.to_list (to_array v)
 
-let of_seq values = Seq.fold_left push empty values
+let of_seq values = append_seq empty values
 
 let to_seq v =
   let rec next index () =

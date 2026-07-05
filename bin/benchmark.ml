@@ -138,6 +138,14 @@ let bench_build config =
         in
         loop 0 Ivector.empty)
   in
+  let ivector_append_list_values =
+    time "Ivector build (append_list)" (fun () ->
+        Ivector.append_list Ivector.empty list_values)
+  in
+  if Ivector.length ivector_append_list_values <> config.size then
+    failwith "Ivector build (append_list): unexpected length";
+  if sum_ivector ivector_append_list_values <> sum_ivector ivector_values then
+    failwith "Ivector build (append_list): unexpected sum";
   (list_values, array_values, dynarray_values, ivector_values)
 
 let bench_sequential_read (list_values, array_values, dynarray_values, ivector_values) =

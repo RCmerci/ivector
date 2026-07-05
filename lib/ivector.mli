@@ -12,6 +12,12 @@ val set : 'a t -> int -> 'a -> 'a t
 
 val push : 'a t -> 'a -> 'a t
 
+val append_list : 'a t -> 'a list -> 'a t
+
+val append_array : 'a t -> 'a array -> 'a t
+
+val append_seq : 'a t -> 'a Seq.t -> 'a t
+
 val pop : 'a t -> 'a t
 
 val peek : 'a t -> 'a

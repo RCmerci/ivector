@@ -99,6 +99,66 @@ let test_persistent_push_keeps_old_vector () =
   check_list "old vector after push" [ 1; 2; 3 ] (to_list v0);
   check_list "new vector after push" [ 1; 2; 3; 4 ] (to_list v1)
 
+let test_append_list_preserves_order_across_tail_boundaries () =
+  let base = of_list (range 31) in
+  let values = List.init 70 (fun i -> i + 31) in
+  let appended = append_list base values in
+  check_int "append_list length" 101 (length appended);
+  check_list "append_list order" (range 101) (to_list appended);
+  check_list "append_list keeps original" (range 31) (to_list base)
+
+let test_append_list_empty_list_keeps_values () =
+  let v = of_list (range 40) in
+  check_list "append_list empty list" (range 40) (to_list (append_list v []))
+
+let test_append_list_large_allocation_is_linear () =
+  let size = 100_000 in
+  let base = of_array (Array.init 17 Fun.id) in
+  let values = List.init size (fun i -> i + 17) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let appended = append_list base values in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large append_list length" (size + 17) (length appended);
+  check_int "large append_list first" 0 (get appended 0);
+  check_int "large append_list last" (size + 16) (peek appended);
+  check_allocated_less_than "large append_list allocation"
+    (float_of_int size *. 120.0)
+    allocated
+
+let test_append_array_preserves_order_and_copies_input () =
+  let base = of_list (range 31) in
+  let values = Array.init 70 (fun i -> i + 31) in
+  let appended = append_array base values in
+  values.(0) <- -1;
+  check_int "append_array length" 101 (length appended);
+  check_list "append_array order" (range 101) (to_list appended);
+  check_list "append_array keeps original" (range 31) (to_list base)
+
+let test_append_array_empty_array_keeps_values () =
+  let v = of_list (range 40) in
+  check_list "append_array empty array" (range 40) (to_list (append_array v [||]))
+
+let test_append_seq_consumes_input_once_in_order () =
+  let base = of_list (range 31) in
+  let next = ref 31 in
+  let rec values () =
+    if !next = 101 then Seq.Nil
+    else
+      let value = !next in
+      incr next;
+      Seq.Cons (value, values)
+  in
+  let appended = append_seq base values in
+  check_int "append_seq consumes input once" 101 !next;
+  check_int "append_seq length" 101 (length appended);
+  check_list "append_seq order" (range 101) (to_list appended);
+  check_list "append_seq keeps original" (range 31) (to_list base)
+
+let test_append_seq_empty_seq_keeps_values () =
+  let v = of_list (range 40) in
+  check_list "append_seq empty seq" (range 40) (to_list (append_seq v Seq.empty))
+
 let test_set_updates_tail_and_trie_without_mutating_old_vector () =
   let v0 = of_list (range 1050) in
   let v1 = set v0 10 10010 in
@@ -429,6 +489,16 @@ let () =
       ("empty", test_empty);
       ("push_and_get_across_tail_boundaries", test_push_and_get_across_tail_boundaries);
       ("persistent_push_keeps_old_vector", test_persistent_push_keeps_old_vector);
+      ( "append_list_preserves_order_across_tail_boundaries",
+        test_append_list_preserves_order_across_tail_boundaries );
+      ("append_list_empty_list_keeps_values", test_append_list_empty_list_keeps_values);
+      ("append_list_large_allocation_is_linear", test_append_list_large_allocation_is_linear);
+      ( "append_array_preserves_order_and_copies_input",
+        test_append_array_preserves_order_and_copies_input );
+      ("append_array_empty_array_keeps_values", test_append_array_empty_array_keeps_values);
+      ( "append_seq_consumes_input_once_in_order",
+        test_append_seq_consumes_input_once_in_order );
+      ("append_seq_empty_seq_keeps_values", test_append_seq_empty_seq_keeps_values);
       ( "set_updates_tail_and_trie_without_mutating_old_vector",
         test_set_updates_tail_and_trie_without_mutating_old_vector );
       ("set_at_count_appends_like_clojure_assocn", test_set_at_count_appends_like_clojure_assocn);
