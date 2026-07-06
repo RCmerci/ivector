@@ -365,6 +365,86 @@ let test_front_and_back_operations () =
   check_raises_invalid_arg "peek_front empty" (fun () -> ignore (peek_front empty));
   check_raises_invalid_arg "peek_back empty" (fun () -> ignore (peek_back empty))
 
+let list_set values index value =
+  List.mapi (fun i current -> if i = index then value else current) values
+
+let list_drop_last values =
+  match List.rev values with
+  | [] -> invalid_arg "empty list"
+  | _ :: rest -> List.rev rest
+
+let test_write_operations_keep_all_historical_versions_persistent () =
+  let snapshots = ref [] in
+  let remember name v expected =
+    check_invariants name v;
+    snapshots := (name, v, expected) :: !snapshots;
+    v
+  in
+  let check_history stage =
+    List.iter
+      (fun (name, v, expected) ->
+        check_list (stage ^ ": " ^ name) expected (to_list v))
+      !snapshots
+  in
+  let v0 = remember "empty" empty [] in
+  let base_values = range 1100 in
+  let v1 =
+    List.fold_left (fun acc value -> push_back acc value) v0 base_values
+    |> fun v -> remember "after repeated push_back" v base_values
+  in
+  let front_values = List.init 70 (fun i -> -1 - i) in
+  let v2 =
+    List.fold_left (fun acc value -> push_front acc value) v1 front_values
+  in
+  let expected2 = List.rev front_values @ base_values in
+  let v2 = remember "after repeated push_front" v2 expected2 in
+  let expected3 = list_set expected2 0 9000 in
+  let v3 = remember "after set head" (set v2 0 9000) expected3 in
+  let expected4 = list_set expected3 80 9080 in
+  let v4 = remember "after set root" (set v3 80 9080) expected4 in
+  let tail_index = length v4 - 1 in
+  let expected5 = list_set expected4 tail_index 9999 in
+  let v5 = remember "after set tail" (set v4 tail_index 9999) expected5 in
+  let expected6 = expected5 @ [ 10000 ] in
+  let v6 = remember "after set append" (set v5 (length v5) 10000) expected6 in
+  let expected7 = expected6 @ [ 10001; 10002; 10003 ] in
+  let v7 =
+    remember "after append_list"
+      (append_list v6 [ 10001; 10002; 10003 ])
+      expected7
+  in
+  let appended = [| 10004; 10005; 10006 |] in
+  let v8 = append_array v7 appended in
+  appended.(0) <- -10004;
+  let expected8 = expected7 @ [ 10004; 10005; 10006 ] in
+  let v8 = remember "after append_array" v8 expected8 in
+  let expected9 = [ -103; -102; -101 ] @ expected8 in
+  let v9 =
+    remember "after prepend_list"
+      (prepend_list v8 [ -103; -102; -101 ])
+      expected9
+  in
+  let prepended = [| -106; -105; -104 |] in
+  let v10 = prepend_arrat v9 prepended in
+  prepended.(0) <- 106;
+  let expected10 = [ -106; -105; -104 ] @ expected9 in
+  let v10 = remember "after prepend_arrat" v10 expected10 in
+  let v11 = concat (subvec v10 0 40) (subvec v10 40 (length v10)) in
+  let v11 = remember "after concat of subvecs" v11 expected10 in
+  let expected12 = expected10 @ [ 20000 ] in
+  let v12 = remember "after push_back concat" (push_back v11 20000) expected12 in
+  let expected13 = -20000 :: expected12 in
+  let v13 = remember "after push_front concat" (push_front v12 (-20000)) expected13 in
+  let back, v14 = pop_back v13 in
+  check_int "pop_back value after history writes" 20000 back;
+  let expected14 = list_drop_last expected13 in
+  let v14 = remember "after pop_back" v14 expected14 in
+  let front, v15 = pop_front v14 in
+  check_int "pop_front value after history writes" (-20000) front;
+  let expected15 = List.tl expected14 in
+  ignore (remember "after pop_front" v15 expected15);
+  check_history "final history check"
+
 let test_concat_and_subvec_preserve_order () =
   let left = of_list (range 1050) in
   let right = of_list (List.init 70 (fun i -> i + 1050)) in
@@ -609,6 +689,8 @@ let () =
           test_case "push_get_and_persistence" test_push_get_and_persistence;
           test_case "set_pop_and_peek" test_set_pop_and_peek;
           test_case "front_and_back_operations" test_front_and_back_operations;
+          test_case "write_operations_keep_all_historical_versions_persistent"
+            test_write_operations_keep_all_historical_versions_persistent;
         ] );
       ( "rrb",
         [
