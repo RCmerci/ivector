@@ -81,12 +81,30 @@ let internal_height v =
     | 1 -> (Obj.magic (Obj.field root 3) : int)
     | _ -> Alcotest.fail "unexpected rrb node tag"
 
+let regular_size_table_count v =
+  let rec node_size_table_count node =
+    if Obj.is_int node then 0
+    else
+      match Obj.tag node with
+      | 0 -> 0
+      | 1 ->
+          let children = Obj.field node 0 in
+          let sizes = Obj.field node 1 in
+          let count = ref (if Obj.is_int sizes then 0 else 1) in
+          for i = 0 to Obj.size children - 1 do
+            count := !count + node_size_table_count (Obj.field children i)
+          done;
+          !count
+      | _ -> Alcotest.fail "unexpected rrb node tag"
+  in
+  node_size_table_count (Obj.field (Obj.repr v) 1)
+
 type 'a raw_node =
   | Raw_empty
   | Raw_leaf of 'a array
   | Raw_branch of {
       children : 'a raw_node array;
-      sizes : int array;
+      sizes : int array option;
       count : int;
       height : int;
       leaves : int;
@@ -125,7 +143,7 @@ let raw_branch children =
   Raw_branch
     {
       children;
-      sizes;
+      sizes = Some sizes;
       count = !count;
       height = !height + 1;
       leaves = !leaves;
@@ -162,8 +180,7 @@ let test_invariants_hold_for_public_operations () =
     (fun size ->
       let values = range size in
       check_invariants "of_list" (of_list values);
-      check_invariants "of_array" (of_array (Array.init size Fun.id));
-      check_invariants "of_seq" (of_seq (List.to_seq values)))
+      check_invariants "of_array" (of_array (Array.init size Fun.id)))
     [ 0; 1; 31; 32; 33; 1024; 1025 ];
   List.iter
     (fun size ->
@@ -186,7 +203,6 @@ let test_invariants_hold_for_public_operations () =
   check_invariants "concat" combined;
   check_invariants "append_list" (append_list pushed [ 1100; 1101 ]);
   check_invariants "append_array" (append_array pushed [| 1100; 1101 |]);
-  check_invariants "of_seq" (of_seq (List.to_seq [ 1100; 1101 ]));
   check_invariants "map" (map (( + ) 1) pushed)
 
 let test_invariants_report_malformed_leaf () =
@@ -195,7 +211,7 @@ let test_invariants_report_malformed_leaf () =
       (Raw_branch
          {
            children = [| raw_leaf 0; raw_leaf 1 |];
-           sizes = [| 0; 1 |];
+           sizes = Some [| 0; 1 |];
            count = 1;
            height = 1;
            leaves = 2;
@@ -219,7 +235,7 @@ let test_invariants_reject_child_height_mismatch () =
           Raw_branch
             {
               children = [| raw_leaf 1; taller_child |];
-              sizes = [| 1; 3 |];
+              sizes = Some [| 1; 3 |];
               count = 3;
               height = 2;
               leaves = 3;
@@ -246,7 +262,7 @@ let test_invariants_reject_linear_height_degradation () =
       Raw_branch
         {
           children = [| skinny_chain (height - 1) |];
-          sizes = [| 1 |];
+          sizes = None;
           count = 1;
           height;
           leaves = 1;
@@ -262,7 +278,7 @@ let test_invariants_reject_linear_height_degradation () =
             {
               children =
                 [| skinny_chain (root_height - 1); skinny_chain (root_height - 1) |];
-              sizes = [| 1; 2 |];
+              sizes = Some [| 1; 2 |];
               count = 2;
               height = root_height;
               leaves = 2;
@@ -481,6 +497,21 @@ let test_push_keeps_height_logarithmic () =
   check_invariants "large push height" values;
   check_int "large push logarithmic height" 2 (internal_height values)
 
+let test_regular_builds_omit_size_tables () =
+  let from_array = of_array (Array.init 20_000 Fun.id) in
+  let pushed =
+    let rec loop i acc =
+      if i = 20_000 then acc else loop (i + 1) (push_back acc i)
+    in
+    loop 0 empty
+  in
+  check_invariants "regular of_array" from_array;
+  check_invariants "regular push_back" pushed;
+  check_int "of_array size tables" 0 (regular_size_table_count from_array);
+  check_int "push_back size tables" 0 (regular_size_table_count pushed);
+  check_int "of_array radix get" 12_345 (get from_array 12_345);
+  check_int "push_back radix get" 12_345 (get pushed 12_345)
+
 let test_push_front_large_allocation_is_linear () =
   let size = 20_000 in
   Gc.compact ();
@@ -525,11 +556,12 @@ let test_conversions_and_map () =
   check_int "to_array copies output" 3 (get v 2);
   let mapped = map string_of_int v in
   check_string_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
-  check_list "of_seq/to_seq" (range 40) (List.of_seq (to_seq (of_seq (List.to_seq (range 40)))));
-  check_list "append_list" (range 70) (to_list (append_list (of_list (range 31)) (List.init 39 (fun i -> i + 31))));
-  check_list "append_array" (range 70) (to_list (append_array (of_list (range 31)) (Array.init 39 (fun i -> i + 31))));
-  check_list "of_seq" (range 70)
-    (to_list (of_seq (List.to_seq (range 70))))
+  check_list "append_list" (range 70)
+    (to_list
+       (append_list (of_list (range 31)) (List.init 39 (fun i -> i + 31))));
+  check_list "append_array" (range 70)
+    (to_list
+       (append_array (of_list (range 31)) (Array.init 39 (fun i -> i + 31))))
 
 let test_case name test =
   Alcotest.test_case name `Quick test
@@ -576,6 +608,8 @@ let () =
             test_push_large_allocation_is_linear;
           test_case "push_keeps_height_logarithmic"
             test_push_keeps_height_logarithmic;
+          test_case "regular_builds_omit_size_tables"
+            test_regular_builds_omit_size_tables;
           test_case "push_front_large_allocation_is_linear"
             test_push_front_large_allocation_is_linear;
         ] );

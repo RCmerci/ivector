@@ -52,10 +52,6 @@ val of_array : 'a array -> 'a t
 
 val to_array : 'a t -> 'a array
 
-val of_seq : 'a Seq.t -> 'a t
-
-val to_seq : 'a t -> 'a Seq.t
-
 (** Check internal structural invariants. Intended for tests and benchmarks.
     Raises [Failure] with the failing node/vector path when an invariant fails. *)
 val invariants : 'a t -> unit

@@ -6,7 +6,7 @@ type 'a node =
   | Leaf of 'a array
   | Branch of {
       children : 'a node array;
-      sizes : int array;
+      sizes : int array option;
       count : int;
       height : int;
       leaves : int;
@@ -56,7 +56,7 @@ let single_child_branch child =
   Branch
     {
       children = [| child |];
-      sizes = [| node_count child |];
+      sizes = None;
       count = node_count child;
       height = node_height child + 1;
       leaves = node_leaves child;
@@ -102,59 +102,81 @@ let find_child sizes index =
   in
   loop 0 (Array.length sizes - 1)
 
-let make_branch children =
-  let length = Array.length children in
-  assert (length > 0);
-  if length = 1 then Array.unsafe_get children 0
+let rec capacity_for_height height =
+  if height < 0 then 0
+  else if height = 0 then width
   else
-    let children = normalize_child_heights children in
-    let sizes = Array.make length 0 in
-    let count = ref 0 in
-    let height = ref (-1) in
-    let leaves = ref 0 in
-    for i = 0 to length - 1 do
-      let child = Array.unsafe_get children i in
-      let child_count = node_count child in
-      assert (child_count > 0);
-      count := !count + child_count;
-      height := max !height (node_height child);
-      leaves := !leaves + node_leaves child;
-      Array.unsafe_set sizes i !count
-    done;
-    Branch
-      {
-        children;
-        sizes;
-        count = !count;
-        height = !height + 1;
-        leaves = !leaves;
-      }
+    let lower = capacity_for_height (height - 1) in
+    if lower > max_int / width then max_int else lower * width
+
+let radix_shift height = bits * height
+
+let radix_child_index height index =
+  let shift = radix_shift height in
+  if shift >= Sys.int_size then 0 else (index lsr shift) land (width - 1)
+
+let radix_offset height child_index =
+  let shift = radix_shift height in
+  if shift >= Sys.int_size then 0 else child_index lsl shift
+
+let child_range sizes height index =
+  match sizes with
+  | None ->
+      let child_index = radix_child_index height index in
+      (child_index, radix_offset height child_index)
+  | Some sizes ->
+      let child_index = find_child sizes index in
+      let previous_size =
+        if child_index = 0 then 0 else Array.unsafe_get sizes (child_index - 1)
+      in
+      (child_index, previous_size)
+
+let child_stop_offset sizes height count child_index =
+  match sizes with
+  | None -> min count (radix_offset height (child_index + 1))
+  | Some sizes -> Array.unsafe_get sizes child_index
+
+let build_sizes children =
+  let length = Array.length children in
+  let sizes = Array.make length 0 in
+  let count = ref 0 in
+  for i = 0 to length - 1 do
+    count := !count + node_count (Array.unsafe_get children i);
+    Array.unsafe_set sizes i !count
+  done;
+  sizes
 
 let make_branch_node children =
   let length = Array.length children in
   assert (length > 0);
   let children = normalize_child_heights children in
-  let sizes = Array.make length 0 in
   let count = ref 0 in
-  let height = ref (-1) in
+  let child_height = node_height (Array.unsafe_get children 0) in
+  let height = child_height + 1 in
+  let child_capacity = capacity_for_height child_height in
+  let regular = ref true in
   let leaves = ref 0 in
   for i = 0 to length - 1 do
     let child = Array.unsafe_get children i in
     let child_count = node_count child in
     assert (child_count > 0);
     count := !count + child_count;
-    height := max !height (node_height child);
+    if i < length - 1 then regular := !regular && child_count = child_capacity;
     leaves := !leaves + node_leaves child;
-    Array.unsafe_set sizes i !count
   done;
   Branch
     {
       children;
-      sizes;
+      sizes = (if !regular then None else Some (build_sizes children));
       count = !count;
-      height = !height + 1;
+      height;
       leaves = !leaves;
     }
+
+let make_branch children =
+  let length = Array.length children in
+  assert (length > 0);
+  if length = 1 then Array.unsafe_get children 0 else make_branch_node children
 
 let rebalance_branch_children children =
   let children = normalize_child_heights children in
@@ -191,13 +213,6 @@ let rebalance_branch_children children =
     | Empty | Leaf _ -> children
 
 let make_concat_branch children = make_branch (rebalance_branch_children children)
-
-let rec capacity_for_height height =
-  if height < 0 then 0
-  else if height = 0 then width
-  else
-    let lower = capacity_for_height (height - 1) in
-    if lower > max_int / width then max_int else lower * width
 
 let node_full node =
   let capacity = capacity_for_height (node_height node) in
@@ -382,9 +397,8 @@ let rec get_node node index =
   | Empty -> invalid_index ()
   | Leaf values -> Array.unsafe_get values index
   | Branch branch ->
-      let child_index = find_child branch.sizes index in
-      let previous_size =
-        if child_index = 0 then 0 else Array.unsafe_get branch.sizes (child_index - 1)
+      let child_index, previous_size =
+        child_range branch.sizes branch.height index
       in
       get_node
         (Array.unsafe_get branch.children child_index)
@@ -405,9 +419,8 @@ let rec set_node node index value =
       Array.unsafe_set values' index value;
       Leaf values'
   | Branch branch ->
-      let child_index = find_child branch.sizes index in
-      let previous_size =
-        if child_index = 0 then 0 else Array.unsafe_get branch.sizes (child_index - 1)
+      let child_index, previous_size =
+        child_range branch.sizes branch.height index
       in
       let children = Array.copy branch.children in
       Array.unsafe_set children child_index
@@ -674,25 +687,30 @@ let rec slice_node node start stop =
     | Empty -> Empty
     | Leaf values -> leaf_slice values start stop
     | Branch branch ->
-        let first_child = find_child branch.sizes start in
-        let last_child = find_child branch.sizes (stop - 1) in
+        let first_child, first_child_start =
+          child_range branch.sizes branch.height start
+        in
+        let last_child, _last_child_start =
+          child_range branch.sizes branch.height (stop - 1)
+        in
         if first_child = last_child then
-          let child_start =
-            if first_child = 0 then 0
-            else Array.unsafe_get branch.sizes (first_child - 1)
-          in
           slice_node
             (Array.unsafe_get branch.children first_child)
-            (start - child_start) (stop - child_start)
+            (start - first_child_start) (stop - first_child_start)
         else
           let children = ref [] in
           for child_index = first_child to last_child do
             let child = Array.unsafe_get branch.children child_index in
             let child_start =
-              if child_index = 0 then 0
-              else Array.unsafe_get branch.sizes (child_index - 1)
+              if child_index = first_child then first_child_start
+              else
+                match branch.sizes with
+                | None -> radix_offset branch.height child_index
+                | Some sizes -> Array.unsafe_get sizes (child_index - 1)
             in
-            let child_stop = Array.unsafe_get branch.sizes child_index in
+            let child_stop =
+              child_stop_offset branch.sizes branch.height branch.count child_index
+            in
             let child_slice_start =
               if child_index = first_child then start - child_start else 0
             in
@@ -789,14 +807,6 @@ let of_list values = of_array (Array.of_list values)
 
 let to_list v = Array.to_list (to_array v)
 
-let of_seq values = of_array (Array.of_seq values)
-
-let to_seq v =
-  let rec next index () =
-    if index = v.count then Seq.Nil else Seq.Cons (get v index, next (index + 1))
-  in
-  next 0
-
 (*
   Internal invariants checked by [invariants]:
 
@@ -806,8 +816,9 @@ let to_seq v =
     height zero and one leaf to their parent.
   - [Branch] nodes contain between one and [width] non-empty children.
   - All direct children of a [Branch] have height [branch.height - 1].
-  - Branch [sizes] are cumulative child ranges, strictly increasing, and the
-    last range equals the branch element count.
+  - Branch [sizes] are absent for radix-regular nodes. Relaxed branch [sizes]
+    are cumulative child ranges, strictly increasing, and the last range equals
+    the branch element count.
   - Branch [count], [height], and [leaves] match their children.
   - A root [Branch] has more than one child; internal singleton branches are
     still allowed to preserve height.
@@ -871,10 +882,13 @@ let rec check_node root path node =
       let length = Array.length branch.children in
       require path (length >= 1) "branch must have at least one child";
       require path (length <= width) "branch child count %d exceeds width %d" length width;
-      require path
-        (Array.length branch.sizes = length)
-        "sizes length %d must equal children length %d"
-        (Array.length branch.sizes) length;
+      (match branch.sizes with
+      | None -> ()
+      | Some sizes ->
+          require path
+            (Array.length sizes = length)
+            "sizes length %d must equal children length %d"
+            (Array.length sizes) length);
       require path (branch.height >= 1) "branch height %d must be >= 1"
         branch.height;
       require path (branch.count > 0) "branch count %d must be positive"
@@ -897,13 +911,21 @@ let rec check_node root path node =
           "child count %d must be positive" child_count;
         count := !count + child_count;
         leaves := !leaves + child_leaves;
-        let size = Array.unsafe_get branch.sizes i in
-        require path (size = !count)
-          "sizes.(%d) must equal prefix count %d, got %d" i !count size;
-        if i > 0 then
-          require path
-            (Array.unsafe_get branch.sizes (i - 1) < size)
-            "sizes must be strictly increasing at index %d" i
+        (match branch.sizes with
+        | None ->
+            if i < length - 1 then
+              require (child_path path i)
+                (child_count = capacity_for_height child_height)
+                "regular branch child must be full: expected %d, got %d"
+                (capacity_for_height child_height) child_count
+        | Some sizes ->
+            let size = Array.unsafe_get sizes i in
+            require path (size = !count)
+              "sizes.(%d) must equal prefix count %d, got %d" i !count size;
+            if i > 0 then
+              require path
+                (Array.unsafe_get sizes (i - 1) < size)
+                "sizes must be strictly increasing at index %d" i)
       done;
       require path (branch.count = !count)
         "branch count must equal child count sum: expected %d, got %d" !count
@@ -911,10 +933,13 @@ let rec check_node root path node =
       require path (branch.leaves = !leaves)
         "branch leaves must equal child leaves sum: expected %d, got %d" !leaves
         branch.leaves;
-      require path
-        (Array.unsafe_get branch.sizes (length - 1) = branch.count)
-        "last size must equal branch count: expected %d, got %d" branch.count
-        (Array.unsafe_get branch.sizes (length - 1));
+      (match branch.sizes with
+      | None -> ()
+      | Some sizes ->
+          require path
+            (Array.unsafe_get sizes (length - 1) = branch.count)
+            "last size must equal branch count: expected %d, got %d" branch.count
+            (Array.unsafe_get sizes (length - 1)));
       require path
         (branch.count <= capacity_for_height branch.height)
         "branch count %d exceeds capacity %d for height %d" branch.count
