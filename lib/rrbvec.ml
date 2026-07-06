@@ -246,8 +246,12 @@ let node_full node =
   let capacity = capacity_for_height (node_height node) in
   capacity <> 0 && node_count node >= capacity
 
+let node_full_at_height height node =
+  let capacity = capacity_for_height height in
+  capacity <> 0 && node_count node >= capacity
+
 let rec new_path height leaf =
-  if height = 0 then leaf else make_branch_node [| new_path (height - 1) leaf |]
+  if height = 0 then leaf else single_child_branch (new_path (height - 1) leaf)
 
 let append_child children child =
   let length = Array.length children in
@@ -261,35 +265,135 @@ let prepend_child child children =
   Array.blit children 0 children' 1 length;
   children'
 
-type 'a leaf_insert =
-  | Inserted of 'a node
-  | Split of 'a node
+let update_sizes sizes start delta =
+  let sizes' = Array.copy sizes in
+  for i = start to Array.length sizes - 1 do
+    Array.unsafe_set sizes' i (Array.unsafe_get sizes i + delta)
+  done;
+  sizes'
 
-let rec insert_leaf height node leaf =
-  if height = 0 then Split leaf
+let replace_branch_child node child_index child =
+  match node with
+  | Branch branch ->
+      let children = Array.copy branch.children in
+      let old_child = Array.unsafe_get children child_index in
+      assert (node_height child = branch.height - 1);
+      Array.unsafe_set children child_index child;
+      let delta = node_count child - node_count old_child in
+      let sizes =
+        match branch.sizes with
+        | None ->
+            if
+              child_index = Array.length children - 1
+              || node_full_at_height (branch.height - 1) child
+            then None
+            else Some (build_sizes children)
+        | Some sizes -> Some (update_sizes sizes child_index delta)
+      in
+      Branch
+        {
+          children;
+          sizes;
+          count = branch.count + delta;
+          height = branch.height;
+          leaves = branch.leaves - node_leaves old_child + node_leaves child;
+        }
+  | Empty | Leaf _ -> invalid_arg "expected branch"
+
+let append_branch_child node child =
+  match node with
+  | Branch branch ->
+      let length = Array.length branch.children in
+      let children = append_child branch.children child in
+      let child_count = node_count child in
+      let sizes =
+        match branch.sizes with
+        | None ->
+            let previous_last = Array.unsafe_get branch.children (length - 1) in
+            if node_full_at_height (branch.height - 1) previous_last then None
+            else Some (build_sizes children)
+        | Some sizes ->
+            let sizes' = Array.make (length + 1) (branch.count + child_count) in
+            Array.blit sizes 0 sizes' 0 length;
+            Some sizes'
+      in
+      Branch
+        {
+          children;
+          sizes;
+          count = branch.count + child_count;
+          height = branch.height;
+          leaves = branch.leaves + node_leaves child;
+        }
+  | Empty | Leaf _ -> invalid_arg "expected branch"
+
+let prepend_branch_child node child =
+  match node with
+  | Branch branch ->
+      let length = Array.length branch.children in
+      let children = prepend_child child branch.children in
+      let child_count = node_count child in
+      let sizes =
+        match branch.sizes with
+        | None ->
+            if node_full_at_height (branch.height - 1) child then None
+            else Some (build_sizes children)
+        | Some sizes ->
+            let sizes' = Array.make (length + 1) 0 in
+            Array.unsafe_set sizes' 0 child_count;
+            for i = 0 to length - 1 do
+              Array.unsafe_set sizes' (i + 1)
+                (child_count + Array.unsafe_get sizes i)
+            done;
+            Some sizes'
+      in
+      Branch
+        {
+          children;
+          sizes;
+          count = branch.count + child_count;
+          height = branch.height;
+          leaves = branch.leaves + node_leaves child;
+        }
+  | Empty | Leaf _ -> invalid_arg "expected branch"
+
+type 'a leaf_insert =
+  {
+    mutable leaf_inserted : bool;
+    mutable leaf_node : 'a node;
+  }
+
+let set_leaf_inserted result node =
+  result.leaf_inserted <- true;
+  result.leaf_node <- node
+
+let set_leaf_split result node =
+  result.leaf_inserted <- false;
+  result.leaf_node <- node
+
+let rec insert_leaf result height node leaf =
+  if height = 0 then set_leaf_split result leaf
   else
     match node with
     | Branch branch ->
         let child_height = height - 1 in
-        let child_index = Array.length branch.children - 1 in
+        let branch_length = Array.length branch.children in
+        let child_index = branch_length - 1 in
         let child = Array.unsafe_get branch.children child_index in
-        if node_full child then
-          let new_child = new_path child_height leaf in
-          if Array.length branch.children < width then
-            Inserted (make_branch_node (append_child branch.children new_child))
-          else Split (new_path height leaf)
+        if node_full_at_height child_height child then
+          if branch_length < width then
+            set_leaf_inserted result
+              (append_branch_child node (new_path child_height leaf))
+          else set_leaf_split result (new_path height leaf)
         else (
-          match insert_leaf child_height child leaf with
-          | Inserted child ->
-              let children = Array.copy branch.children in
-              Array.unsafe_set children child_index child;
-              Inserted (make_branch_node children)
-          | Split new_child ->
-              if Array.length branch.children < width then
-                Inserted
-                  (make_branch_node (append_child branch.children new_child))
-              else Split (new_path height leaf))
-    | Empty | Leaf _ -> Split leaf
+          insert_leaf result child_height child leaf;
+          if result.leaf_inserted then
+            set_leaf_inserted result
+              (replace_branch_child node child_index result.leaf_node)
+          else if branch_length < width then
+            set_leaf_inserted result (append_branch_child node result.leaf_node)
+          else set_leaf_split result (new_path height leaf))
+    | Empty | Leaf _ -> set_leaf_split result leaf
 
 let append_full_leaf root leaf =
   match root with
@@ -298,35 +402,33 @@ let append_full_leaf root leaf =
   | Branch _ -> (
       let height = node_height root in
       if node_full root then make_branch_node [| root; new_path height leaf |]
-      else
-        match insert_leaf height root leaf with
-        | Inserted root -> root
-        | Split sibling -> make_branch_node [| root; sibling |])
+      else (
+        let result = { leaf_inserted = false; leaf_node = Empty } in
+        insert_leaf result height root leaf;
+        if result.leaf_inserted then result.leaf_node
+        else make_branch_node [| root; result.leaf_node |]))
 
-let rec insert_leaf_front height node leaf =
-  if height = 0 then Split leaf
+let rec insert_leaf_front result height node leaf =
+  if height = 0 then set_leaf_split result leaf
   else
     match node with
     | Branch branch ->
         let child_height = height - 1 in
+        let branch_length = Array.length branch.children in
         let child = Array.unsafe_get branch.children 0 in
-        if node_full child then
-          let new_child = new_path child_height leaf in
-          if Array.length branch.children < width then
-            Inserted (make_branch_node (prepend_child new_child branch.children))
-          else Split (new_path height leaf)
+        if node_full_at_height child_height child then
+          if branch_length < width then
+            set_leaf_inserted result
+              (prepend_branch_child node (new_path child_height leaf))
+          else set_leaf_split result (new_path height leaf)
         else (
-          match insert_leaf_front child_height child leaf with
-          | Inserted child ->
-              let children = Array.copy branch.children in
-              Array.unsafe_set children 0 child;
-              Inserted (make_branch_node children)
-          | Split new_child ->
-              if Array.length branch.children < width then
-                Inserted
-                  (make_branch_node (prepend_child new_child branch.children))
-              else Split (new_path height leaf))
-    | Empty | Leaf _ -> Split leaf
+          insert_leaf_front result child_height child leaf;
+          if result.leaf_inserted then
+            set_leaf_inserted result (replace_branch_child node 0 result.leaf_node)
+          else if branch_length < width then
+            set_leaf_inserted result (prepend_branch_child node result.leaf_node)
+          else set_leaf_split result (new_path height leaf))
+    | Empty | Leaf _ -> set_leaf_split result leaf
 
 let prepend_full_leaf root leaf =
   match root with
@@ -335,10 +437,11 @@ let prepend_full_leaf root leaf =
   | Branch _ -> (
       let height = node_height root in
       if node_full root then make_branch_node [| new_path height leaf; root |]
-      else
-        match insert_leaf_front height root leaf with
-        | Inserted root -> root
-        | Split sibling -> make_branch_node [| sibling; root |])
+      else (
+        let result = { leaf_inserted = false; leaf_node = Empty } in
+        insert_leaf_front result height root leaf;
+        if result.leaf_inserted then result.leaf_node
+        else make_branch_node [| result.leaf_node; root |]))
 
 let append_arrays left right =
   let left_length = Array.length left in

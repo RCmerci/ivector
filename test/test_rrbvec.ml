@@ -600,7 +600,7 @@ let test_push_back_same_height_fast_path_allocation () =
   check_invariants "push_back same-height allocation" values;
   check_int "push_back same-height length" size (length values);
   check_int "push_back same-height last" (size - 1) (peek_back values);
-  check_allocated_less_than "push_back same-height allocation" 4_100_000.
+  check_allocated_less_than "push_back same-height allocation" 3_987_000.
     allocated
 
 let test_push_keeps_height_logarithmic () =
@@ -645,6 +645,24 @@ let test_push_front_large_allocation_is_linear () =
   check_int "large push_front first" (size - 1) (peek_front values);
   check_int "large push_front last" 0 (peek_back values);
   check_allocated_less_than "large push_front allocation" 60_000_000. allocated
+
+let test_push_front_same_height_fast_path_allocation () =
+  let size = 20_000 in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let values =
+    let rec loop i acc =
+      if i = size then acc else loop (i + 1) (push_front acc i)
+    in
+    loop 0 empty
+  in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "push_front same-height allocation" values;
+  check_int "push_front same-height length" size (length values);
+  check_int "push_front same-height first" (size - 1) (peek_front values);
+  check_int "push_front same-height last" 0 (peek_back values);
+  check_allocated_less_than "push_front same-height allocation" 4_052_000.
+    allocated
 
 let test_fold_right_visits_values_in_order () =
   let v = append (of_list (range 1050)) (of_list (List.init 70 (fun i -> i + 1050))) in
@@ -735,6 +753,8 @@ let () =
             test_regular_builds_omit_size_tables;
           test_case "push_front_large_allocation_is_linear"
             test_push_front_large_allocation_is_linear;
+          test_case "push_front_same_height_fast_path_allocation"
+            test_push_front_same_height_fast_path_allocation;
         ] );
       ( "conversion",
         [
