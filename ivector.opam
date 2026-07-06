@@ -12,6 +12,8 @@ bug-reports: "https://github.com/username/reponame/issues"
 depends: [
   "dune" {>= "3.23"}
   "ocaml"
+  "alcotest" {with-test}
+  "batteries" {with-test}
   "odoc" {with-doc}
 ]
 build: [

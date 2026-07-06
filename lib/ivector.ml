@@ -134,6 +134,108 @@ let root_shift_for_tailoff tailoff =
   in
   loop bits
 
+(*
+  Internal invariants checked by [invariants]:
+
+  - Every vector has a non-negative [count].
+  - Materialized vectors have [shift <> append_shift], and [shift] is a
+    non-negative multiple of [bits] with [shift >= bits].
+  - Materialized [tailoff] is exactly [tailoff count].
+  - Materialized [tail] length is [count - tailoff], is at most [width], and is
+    non-empty whenever [count > 0].
+  - Materialized [shift] is the minimal root shift for [tailoff].
+  - Materialized vectors have [append_height = 0] and [append_leaves = 1].
+  - A materialized root is [Empty] exactly when [tailoff = 0]; otherwise it is a
+    [Branch]. It is never a top-level [Leaf] or [Append].
+  - Trie levels are non-negative multiples of [bits].
+  - [Empty] trie nodes account for exactly zero expected elements.
+  - [Branch] nodes have exactly [width] children and their expected element
+    counts are distributed as a dense left-to-right prefix.
+  - [Leaf] nodes appear only at level zero and represent exactly one full
+    [width]-sized chunk.
+  - [Append] nodes do not appear inside materialized trie nodes.
+  - Append vectors have [shift = append_shift], an empty [tail], and
+    [tailoff = max_int].
+  - Append nodes always have non-empty [left] and [right] vectors.
+  - Append [count] is [left.count + right.count].
+  - Append [append_height] and [append_leaves] match the recursively computed
+    append-tree height and leaf count.
+  - Append trees satisfy [append_balanced].
+*)
+let invariants v =
+  let check_level level =
+    assert (level >= 0);
+    assert (level mod bits = 0)
+  in
+  let rec check_node level expected node =
+    check_level level;
+    assert (expected >= 0);
+    match node with
+    | Empty -> assert (expected = 0)
+    | Leaf values ->
+        assert (level = 0);
+        assert (Array.length values = expected);
+        assert (expected = width)
+    | Branch children ->
+        assert (level >= bits);
+        assert (Array.length children = width);
+        let child_span = 1 lsl level in
+        if level < Sys.int_size - bits then
+          assert (expected <= width * child_span);
+        for child_index = 0 to width - 1 do
+          let consumed = child_index * child_span in
+          let child_expected =
+            if consumed >= expected then 0
+            else min child_span (expected - consumed)
+          in
+          check_node (level - bits) child_expected
+            (Array.unsafe_get children child_index)
+        done
+    | Append _ -> assert false
+  in
+  let check_materialized v =
+    assert (v.count >= 0);
+    assert (v.shift <> append_shift);
+    check_level v.shift;
+    assert (v.shift >= bits);
+    assert (v.tailoff = tailoff v.count);
+    assert (Array.length v.tail = v.count - v.tailoff);
+    assert (Array.length v.tail <= width);
+    assert (v.count = 0 || Array.length v.tail > 0);
+    assert (v.shift = root_shift_for_tailoff v.tailoff);
+    assert (v.append_height = 0);
+    assert (v.append_leaves = 1);
+    (match v.root with
+    | Empty -> assert (v.tailoff = 0)
+    | Branch _ -> assert (v.tailoff > 0)
+    | Leaf _ | Append _ -> assert false);
+    check_node v.shift v.tailoff v.root
+  in
+  let rec check_append v =
+    assert (v.count >= 0);
+    if v.shift <> append_shift then (
+      check_materialized v;
+      (0, 1))
+    else (
+      assert (Array.length v.tail = 0);
+      assert (v.tailoff = max_int);
+      match v.root with
+      | Append { left; right } ->
+          assert (left.count > 0);
+          assert (right.count > 0);
+          assert (v.count = left.count + right.count);
+          let left_height, left_leaves = check_append left in
+          let right_height, right_leaves = check_append right in
+          let append_height = 1 + max left_height right_height in
+          let append_leaves = left_leaves + right_leaves in
+          assert (v.append_height = append_height);
+          assert (v.append_leaves = append_leaves);
+          assert (append_balanced append_height append_leaves);
+          (append_height, append_leaves)
+      | Empty | Branch _ | Leaf _ -> assert false)
+  in
+  ignore (check_append v)
+
 let rec node_of_array_range values start stop level =
   let children = Array.make width Empty in
   let child_span = 1 lsl level in

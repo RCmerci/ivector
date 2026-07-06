@@ -1,9 +1,4 @@
 (executable
- (public_name ivector)
- (name main)
- (libraries ivector))
-
-(executable
- (public_name ivector-bench)
  (name benchmark)
- (libraries ivector))
+ (modules benchmark)
+ (libraries ivector batteries))

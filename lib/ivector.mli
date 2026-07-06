@@ -41,3 +41,6 @@ val to_array : 'a t -> 'a array
 val of_seq : 'a Seq.t -> 'a t
 
 val to_seq : 'a t -> 'a Seq.t
+
+(** Assert internal structural invariants. Intended for tests and benchmarks. *)
+val invariants : 'a t -> unit

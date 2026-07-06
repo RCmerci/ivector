@@ -1,3 +1,3 @@
 (test
  (name test_ivector)
- (libraries ivector))
+ (libraries ivector alcotest))

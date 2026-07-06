@@ -1,41 +1,40 @@
 open Ivector
 
 let check name condition =
-  if not condition then failwith name
+  Alcotest.(check bool) name true condition
 
 let check_int name expected actual =
-  if expected <> actual then
-    failwith (Printf.sprintf "%s: expected %d, got %d" name expected actual)
+  Alcotest.(check int) name expected actual
 
 let check_list name expected actual =
-  if expected <> actual then failwith name
+  Alcotest.(check (list int)) name expected actual
+
+let check_string_list name expected actual =
+  Alcotest.(check (list string)) name expected actual
 
 let check_array name expected actual =
-  if expected <> actual then
-    failwith
-      (Printf.sprintf "%s: expected [%s], got [%s]" name
-         (String.concat "; "
-            (Array.to_list (Array.map string_of_int expected)))
-         (String.concat "; " (Array.to_list (Array.map string_of_int actual))))
+  Alcotest.(check (array int)) name expected actual
 
 let check_allocated_less_than name limit actual =
   if not (actual < limit) then
-    failwith
-      (Printf.sprintf "%s: expected < %.0f bytes, got %.0f bytes" name limit
-         actual)
+    Alcotest.failf "%s: expected < %.0f bytes, got %.0f bytes" name limit
+      actual
 
 let check_less_or_equal name limit actual =
-  if actual > limit then
-    failwith (Printf.sprintf "%s: expected <= %d, got %d" name limit actual)
+  if actual > limit then Alcotest.failf "%s: expected <= %d, got %d" name limit actual
 
 let check_raises_invalid_arg name f =
   match f () with
   | exception Invalid_argument _ -> ()
   | exception exn ->
-      failwith
-        (Printf.sprintf "%s: expected Invalid_argument, got %s" name
-           (Printexc.to_string exn))
-  | _ -> failwith (name ^ ": expected Invalid_argument")
+      Alcotest.failf "%s: expected Invalid_argument, got %s" name
+        (Printexc.to_string exn)
+  | _ -> Alcotest.failf "%s: expected Invalid_argument" name
+
+let check_invariants name v =
+  try invariants v
+  with exn ->
+    Alcotest.failf "%s: invariant failure: %s" name (Printexc.to_string exn)
 
 let range n = List.init n Fun.id
 
@@ -79,12 +78,39 @@ let assert_materialized name v =
 
 let test_empty () =
   let v = empty in
+  check_invariants "empty" v;
   check_int "empty length" 0 (length v);
   check "empty is_empty" (is_empty v);
   check_list "empty to_list" [] (to_list v);
   check_raises_invalid_arg "get empty" (fun () -> ignore (get v 0));
   check_raises_invalid_arg "pop empty" (fun () -> ignore (pop v));
   check_raises_invalid_arg "peek empty" (fun () -> ignore (peek v))
+
+let test_invariants_hold_for_public_operations () =
+  List.iter
+    (fun size ->
+      let v = of_list (range size) in
+      check_invariants "of_list" v;
+      check_invariants "of_array" (of_array (Array.init size Fun.id));
+      check_invariants "of_seq" (of_seq (List.to_seq (range size))))
+    [ 0; 1; 31; 32; 33; 1024; 1025 ];
+  let pushed =
+    List.fold_left (fun acc value -> push acc value) empty (range 1100)
+  in
+  check_invariants "push" pushed;
+  check_invariants "set trie" (set pushed 100 42);
+  check_invariants "set tail" (set pushed 1099 42);
+  check_invariants "set append" (set pushed 1100 42);
+  check_invariants "pop" (pop pushed);
+  check_invariants "subvec" (subvec pushed 17 1090);
+  let combined =
+    concat (subvec pushed 0 500) (subvec pushed 500 (length pushed))
+  in
+  check_invariants "concat" combined;
+  check_invariants "append_list" (append_list pushed [ 1100; 1101 ]);
+  check_invariants "append_array" (append_array pushed [| 1100; 1101 |]);
+  check_invariants "append_seq" (append_seq pushed (List.to_seq [ 1100; 1101 ]));
+  check_invariants "map" (map (( + ) 1) pushed)
 
 let test_push_and_get_across_tail_boundaries () =
   List.iter
@@ -355,7 +381,7 @@ let test_map_preserves_order_and_length () =
 let test_map_supports_type_changes_and_keeps_original () =
   let v = of_list [ 1; 2; 3 ] in
   let mapped = map string_of_int v in
-  check_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
+  check_string_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
   check_list "map keeps original" [ 1; 2; 3 ] (to_list v)
 
 let test_subvec_extracts_half_open_range () =
@@ -490,62 +516,107 @@ let test_mixed_subvec_concat_stays_balanced () =
     (List.mapi (fun i value -> if i = 2_000 then -1 else value) expected)
     (to_list (set combined 2_000 (-1)))
 
+let test_case name test =
+  Alcotest.test_case name `Quick test
+
+let allocation_test_case name test =
+  Alcotest.test_case name `Slow test
+
 let () =
-  List.iter
-    (fun (name, test) ->
-      try test () with
-      | exn ->
-          Printf.eprintf "FAILED: %s\n%s\n" name (Printexc.to_string exn);
-          exit 1)
+  Alcotest.run "ivector"
     [
-      ("empty", test_empty);
-      ("push_and_get_across_tail_boundaries", test_push_and_get_across_tail_boundaries);
-      ("persistent_push_keeps_old_vector", test_persistent_push_keeps_old_vector);
-      ( "append_list_preserves_order_across_tail_boundaries",
-        test_append_list_preserves_order_across_tail_boundaries );
-      ("append_list_empty_list_keeps_values", test_append_list_empty_list_keeps_values);
-      ("append_list_large_allocation_is_linear", test_append_list_large_allocation_is_linear);
-      ( "append_array_preserves_order_and_copies_input",
-        test_append_array_preserves_order_and_copies_input );
-      ("append_array_empty_array_keeps_values", test_append_array_empty_array_keeps_values);
-      ( "append_seq_consumes_input_once_in_order",
-        test_append_seq_consumes_input_once_in_order );
-      ("append_seq_empty_seq_keeps_values", test_append_seq_empty_seq_keeps_values);
-      ( "set_updates_tail_and_trie_without_mutating_old_vector",
-        test_set_updates_tail_and_trie_without_mutating_old_vector );
-      ("set_at_count_appends_like_clojure_assocn", test_set_at_count_appends_like_clojure_assocn);
-      ("pop_and_peek_across_boundaries", test_pop_and_peek_across_boundaries);
-      ("invalid_indices", test_invalid_indices);
-      ("large_roundtrip", test_large_roundtrip);
-      ("of_list_large_allocation_uses_array_conversion", test_of_list_large_allocation_uses_array_conversion);
-      ("of_array_and_to_array_roundtrip", test_of_array_and_to_array_roundtrip);
-      ( "array_conversions_do_not_share_mutable_storage",
-        test_array_conversions_do_not_share_mutable_storage );
-      ( "of_array_large_allocation_is_linear_in_array_storage",
-        test_of_array_large_allocation_is_linear_in_array_storage );
-      ( "to_array_large_allocation_avoids_intermediate_list",
-        test_to_array_large_allocation_avoids_intermediate_list );
-      ("to_array_supports_subvec_and_concat", test_to_array_supports_subvec_and_concat);
-      ("subvec_returns_materialized_vector", test_subvec_returns_materialized_vector);
-      ("subvec_uses_bulk_array_storage", test_subvec_uses_bulk_array_storage);
-      ("of_seq_and_to_seq_roundtrip", test_of_seq_and_to_seq_roundtrip);
-      ("of_seq_consumes_input_once_in_order", test_of_seq_consumes_input_once_in_order);
-      ("to_seq_supports_subvec_and_concat", test_to_seq_supports_subvec_and_concat);
-      ("fold_left_visits_values_in_order", test_fold_left_visits_values_in_order);
-      ("fold_left_empty_keeps_accumulator", test_fold_left_empty_keeps_accumulator);
-      ("map_preserves_order_and_length", test_map_preserves_order_and_length);
-      ("map_supports_type_changes_and_keeps_original", test_map_supports_type_changes_and_keeps_original);
-      ("subvec_extracts_half_open_range", test_subvec_extracts_half_open_range);
-      ("subvec_rejects_invalid_ranges", test_subvec_rejects_invalid_ranges);
-      ("concat_preserves_order_and_operands", test_concat_preserves_order_and_operands);
-      ("concat_handles_empty_vectors", test_concat_handles_empty_vectors);
-      ( "subvec_and_concat_support_vector_operations",
-        test_subvec_and_concat_support_vector_operations );
-      ("deep_concat_traversal_is_stack_safe", test_deep_concat_traversal_is_stack_safe);
-      ("deep_concat_to_array_is_stack_safe", test_deep_concat_to_array_is_stack_safe);
-      ( "left_associated_concat_stays_balanced",
-        test_left_associated_concat_stays_balanced );
-      ( "right_associated_concat_stays_balanced",
-        test_right_associated_concat_stays_balanced );
-      ("mixed_subvec_concat_stays_balanced", test_mixed_subvec_concat_stays_balanced);
+      ( "core",
+        [
+          test_case "empty" test_empty;
+          test_case "invariants_hold_for_public_operations"
+            test_invariants_hold_for_public_operations;
+          test_case "push_and_get_across_tail_boundaries"
+            test_push_and_get_across_tail_boundaries;
+          test_case "persistent_push_keeps_old_vector"
+            test_persistent_push_keeps_old_vector;
+          test_case "set_updates_tail_and_trie_without_mutating_old_vector"
+            test_set_updates_tail_and_trie_without_mutating_old_vector;
+          test_case "set_at_count_appends_like_clojure_assocn"
+            test_set_at_count_appends_like_clojure_assocn;
+          test_case "pop_and_peek_across_boundaries"
+            test_pop_and_peek_across_boundaries;
+          test_case "invalid_indices" test_invalid_indices;
+          allocation_test_case "large_roundtrip" test_large_roundtrip;
+        ] );
+      ( "append",
+        [
+          test_case "append_list_preserves_order_across_tail_boundaries"
+            test_append_list_preserves_order_across_tail_boundaries;
+          test_case "append_list_empty_list_keeps_values"
+            test_append_list_empty_list_keeps_values;
+          allocation_test_case "append_list_large_allocation_is_linear"
+            test_append_list_large_allocation_is_linear;
+          test_case "append_array_preserves_order_and_copies_input"
+            test_append_array_preserves_order_and_copies_input;
+          test_case "append_array_empty_array_keeps_values"
+            test_append_array_empty_array_keeps_values;
+          test_case "append_seq_consumes_input_once_in_order"
+            test_append_seq_consumes_input_once_in_order;
+          test_case "append_seq_empty_seq_keeps_values"
+            test_append_seq_empty_seq_keeps_values;
+        ] );
+      ( "conversion",
+        [
+          allocation_test_case "of_list_large_allocation_uses_array_conversion"
+            test_of_list_large_allocation_uses_array_conversion;
+          test_case "of_array_and_to_array_roundtrip"
+            test_of_array_and_to_array_roundtrip;
+          test_case "array_conversions_do_not_share_mutable_storage"
+            test_array_conversions_do_not_share_mutable_storage;
+          allocation_test_case "of_array_large_allocation_is_linear_in_array_storage"
+            test_of_array_large_allocation_is_linear_in_array_storage;
+          allocation_test_case "to_array_large_allocation_avoids_intermediate_list"
+            test_to_array_large_allocation_avoids_intermediate_list;
+          test_case "to_array_supports_subvec_and_concat"
+            test_to_array_supports_subvec_and_concat;
+          test_case "of_seq_and_to_seq_roundtrip" test_of_seq_and_to_seq_roundtrip;
+          test_case "of_seq_consumes_input_once_in_order"
+            test_of_seq_consumes_input_once_in_order;
+          test_case "to_seq_supports_subvec_and_concat"
+            test_to_seq_supports_subvec_and_concat;
+        ] );
+      ( "transform",
+        [
+          test_case "fold_left_visits_values_in_order"
+            test_fold_left_visits_values_in_order;
+          test_case "fold_left_empty_keeps_accumulator"
+            test_fold_left_empty_keeps_accumulator;
+          test_case "map_preserves_order_and_length"
+            test_map_preserves_order_and_length;
+          test_case "map_supports_type_changes_and_keeps_original"
+            test_map_supports_type_changes_and_keeps_original;
+        ] );
+      ( "subvec",
+        [
+          test_case "subvec_returns_materialized_vector"
+            test_subvec_returns_materialized_vector;
+          allocation_test_case "subvec_uses_bulk_array_storage"
+            test_subvec_uses_bulk_array_storage;
+          test_case "subvec_extracts_half_open_range"
+            test_subvec_extracts_half_open_range;
+          test_case "subvec_rejects_invalid_ranges" test_subvec_rejects_invalid_ranges;
+        ] );
+      ( "concat",
+        [
+          test_case "concat_preserves_order_and_operands"
+            test_concat_preserves_order_and_operands;
+          test_case "concat_handles_empty_vectors" test_concat_handles_empty_vectors;
+          test_case "subvec_and_concat_support_vector_operations"
+            test_subvec_and_concat_support_vector_operations;
+          allocation_test_case "deep_concat_traversal_is_stack_safe"
+            test_deep_concat_traversal_is_stack_safe;
+          allocation_test_case "deep_concat_to_array_is_stack_safe"
+            test_deep_concat_to_array_is_stack_safe;
+          allocation_test_case "left_associated_concat_stays_balanced"
+            test_left_associated_concat_stays_balanced;
+          allocation_test_case "right_associated_concat_stays_balanced"
+            test_right_associated_concat_stays_balanced;
+          test_case "mixed_subvec_concat_stays_balanced"
+            test_mixed_subvec_concat_stays_balanced;
+        ] );
     ]
