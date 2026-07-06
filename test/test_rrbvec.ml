@@ -53,6 +53,23 @@ let check_invariant_failure_contains name expected_message v =
 
 let range n = List.init n Fun.id
 
+let list_slice values start stop =
+  let rec drop count values =
+    if count = 0 then values
+    else
+      match values with
+      | [] -> []
+      | _ :: rest -> drop (count - 1) rest
+  in
+  let rec take count values acc =
+    if count = 0 then List.rev acc
+    else
+      match values with
+      | [] -> invalid_arg "not enough values"
+      | value :: rest -> take (count - 1) rest (value :: acc)
+  in
+  take (stop - start) (drop start values) []
+
 let rrb_width = 32
 
 let internal_height v =
@@ -333,6 +350,58 @@ let test_concat_and_subvec_preserve_order () =
   check_raises_invalid_arg "subvec past end" (fun () ->
       ignore (subvec combined 0 1121))
 
+let test_subvec_slices_head_root_and_tail () =
+  let root_values = range 2048 in
+  let tail_values = List.init 15 (fun i -> i + 2048) in
+  let head_values = List.init 10 (fun i -> i - 10) in
+  let base = of_list root_values in
+  let with_tail = List.fold_left push_back base tail_values in
+  let values =
+    List.fold_right (fun value acc -> push_front acc value) head_values with_tail
+  in
+  let expected = head_values @ root_values @ tail_values in
+  let cases =
+    [
+      ("inside head", 2, 8);
+      ("head into root", 5, 20);
+      ("inside root leaf", 41, 45);
+      ("across root children", 110, 1900);
+      ("root into tail", 2055, 2068);
+      ("inside tail", 2060, 2073);
+      ("whole vector", 0, length values);
+    ]
+  in
+  List.iter
+    (fun (name, start, stop) ->
+      let slice = subvec values start stop in
+      check_invariants ("subvec " ^ name) slice;
+      check_int (name ^ " length") (stop - start) (length slice);
+      check_list (name ^ " order") (list_slice expected start stop)
+        (to_list slice))
+    cases
+
+let test_subvec_small_slice_allocation_does_not_scale_with_vector_length () =
+  let size = 100_000 in
+  let values = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let slice = subvec values 50_000 50_010 in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "small subvec allocation" slice;
+  check_int "small subvec allocation length" 10 (length slice);
+  check_list "small subvec allocation order" (List.init 10 (fun i -> i + 50_000))
+    (to_list slice);
+  check_allocated_less_than "small subvec allocation" 200_000. allocated
+
+let test_subvec_collapses_promoted_singleton_root () =
+  let promoted =
+    concat (of_list [ 0 ]) (of_array (Array.init 1024 (fun i -> i + 1)))
+  in
+  check_invariants "promoted concat" promoted;
+  let slice = subvec promoted 0 1 in
+  check_invariants "singleton root subvec" slice;
+  check_list "singleton root subvec order" [ 0 ] (to_list slice)
+
 let test_concat_keeps_child_heights_uniform () =
   let combined = concat (of_array (Array.init 1024 Fun.id)) (of_list [ 1024 ]) in
   check_invariants "concat uniform child heights" combined;
@@ -491,6 +560,12 @@ let () =
         [
           test_case "concat_and_subvec_preserve_order"
             test_concat_and_subvec_preserve_order;
+          test_case "subvec_slices_head_root_and_tail"
+            test_subvec_slices_head_root_and_tail;
+          test_case "subvec_small_slice_allocation_does_not_scale_with_vector_length"
+            test_subvec_small_slice_allocation_does_not_scale_with_vector_length;
+          test_case "subvec_collapses_promoted_singleton_root"
+            test_subvec_collapses_promoted_singleton_root;
           test_case "concat_keeps_child_heights_uniform"
             test_concat_keeps_child_heights_uniform;
           test_case "repeated_concat_stays_stack_safe"

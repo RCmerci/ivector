@@ -663,11 +663,84 @@ let of_array values =
     in
     make_vector (build_level leaves)
 
+let leaf_slice values start stop =
+  if start = 0 && stop = Array.length values then Leaf values
+  else Leaf (Array.sub values start (stop - start))
+
+let rec slice_node node start stop =
+  if start = 0 && stop = node_count node then node
+  else
+    match node with
+    | Empty -> Empty
+    | Leaf values -> leaf_slice values start stop
+    | Branch branch ->
+        let first_child = find_child branch.sizes start in
+        let last_child = find_child branch.sizes (stop - 1) in
+        if first_child = last_child then
+          let child_start =
+            if first_child = 0 then 0
+            else Array.unsafe_get branch.sizes (first_child - 1)
+          in
+          slice_node
+            (Array.unsafe_get branch.children first_child)
+            (start - child_start) (stop - child_start)
+        else
+          let children = ref [] in
+          for child_index = first_child to last_child do
+            let child = Array.unsafe_get branch.children child_index in
+            let child_start =
+              if child_index = 0 then 0
+              else Array.unsafe_get branch.sizes (child_index - 1)
+            in
+            let child_stop = Array.unsafe_get branch.sizes child_index in
+            let child_slice_start =
+              if child_index = first_child then start - child_start else 0
+            in
+            let child_slice_stop =
+              if child_index = last_child then stop - child_start
+              else child_stop - child_start
+            in
+            let child =
+              if child_slice_start = 0 && child_slice_stop = node_count child then
+                child
+              else slice_node child child_slice_start child_slice_stop
+            in
+            children := child :: !children
+          done;
+          make_branch (Array.of_list (List.rev !children))
+
+let concat_array_slice node values start stop =
+  if start = stop then node else concat_nodes node (leaf_slice values start stop)
+
+let concat_node_slice node slice =
+  match slice with Empty -> node | Leaf _ | Branch _ -> concat_nodes node slice
+
+let rec compact_root = function
+  | Branch branch when Array.length branch.children = 1 ->
+      compact_root (Array.unsafe_get branch.children 0)
+  | node -> node
+
 let subvec v start stop =
   if start < 0 || stop < start || stop > v.count then invalid_index ();
   let count = stop - start in
   if count = 0 then empty
-  else of_array (Array.sub (to_array v) start count)
+  else
+    let head_length = Array.length v.head in
+    let root_start = head_length in
+    let root_stop = v.tailoff in
+    let node = ref Empty in
+    if start < head_length then
+      (node :=
+         concat_array_slice !node v.head start (min stop head_length));
+    if start < root_stop && stop > root_start then (
+      let slice_start = max start root_start - root_start in
+      let slice_stop = min stop root_stop - root_start in
+      node := concat_node_slice !node (slice_node v.root slice_start slice_stop));
+    if stop > v.tailoff then
+      (node :=
+         concat_array_slice !node v.tail (max start v.tailoff - v.tailoff)
+           (stop - v.tailoff));
+    make_vector (compact_root !node)
 
 let pop_front v =
   if v.count = 0 then invalid_index ();
