@@ -106,12 +106,27 @@ let make_with_edges head root tail =
     head;
   }
 
-let rec capacity_for_height height =
-  if height < 0 then 0
-  else if height = 0 then width
-  else
-    let lower = capacity_for_height (height - 1) in
-    if lower > max_int / width then max_int else lower * width
+let capacities =
+  let rec loop capacity acc =
+    let acc = capacity :: acc in
+    if capacity = max_int then Array.of_list (List.rev acc)
+    else if capacity > max_int / width then loop max_int acc
+    else loop (capacity * width) acc
+  in
+  loop width []
+
+let capacities_length = Array.length capacities
+let capacity_height_1 = Array.unsafe_get capacities 1
+let capacity_height_2 = Array.unsafe_get capacities 2
+
+let capacity_for_height height =
+  match height with
+  | 0 -> width
+  | 1 -> capacity_height_1
+  | 2 -> capacity_height_2
+  | _ when height < 0 -> 0
+  | _ when height < capacities_length -> Array.unsafe_get capacities height
+  | _ -> max_int
 
 let radix_shift height = bits * height
 
