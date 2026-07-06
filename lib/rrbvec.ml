@@ -67,11 +67,25 @@ let rec promote_to_height height child =
   else promote_to_height height (single_child_branch child)
 
 let normalize_child_heights children =
-  let max_height = ref (-1) in
-  for i = 0 to Array.length children - 1 do
-    max_height := max !max_height (node_height (Array.unsafe_get children i))
-  done;
-  Array.map (promote_to_height !max_height) children
+  let length = Array.length children in
+  if length = 0 then children
+  else
+    let max_height = ref (node_height (Array.unsafe_get children 0)) in
+    let same_height = ref true in
+    for i = 1 to length - 1 do
+      let height = node_height (Array.unsafe_get children i) in
+      if height <> !max_height then same_height := false;
+      if height > !max_height then max_height := height
+    done;
+    if !same_height then children
+    else
+      let normalized = Array.copy children in
+      for i = 0 to length - 1 do
+        let child = Array.unsafe_get normalized i in
+        if node_height child <> !max_height then
+          Array.unsafe_set normalized i (promote_to_height !max_height child)
+      done;
+      normalized
 
 let make_vector root =
   {

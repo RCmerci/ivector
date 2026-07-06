@@ -586,6 +586,23 @@ let test_push_large_allocation_is_linear () =
   check_int "large push last" (size - 1) (peek_back values);
   check_allocated_less_than "large push allocation" 60_000_000. allocated
 
+let test_push_back_same_height_fast_path_allocation () =
+  let size = 20_000 in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let values =
+    let rec loop i acc =
+      if i = size then acc else loop (i + 1) (push_back acc i)
+    in
+    loop 0 empty
+  in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "push_back same-height allocation" values;
+  check_int "push_back same-height length" size (length values);
+  check_int "push_back same-height last" (size - 1) (peek_back values);
+  check_allocated_less_than "push_back same-height allocation" 4_100_000.
+    allocated
+
 let test_push_keeps_height_logarithmic () =
   let size = 20_000 in
   let values =
@@ -710,6 +727,8 @@ let () =
             test_repeated_chunk_concat_satisfies_relaxed_density;
           test_case "push_large_allocation_is_linear"
             test_push_large_allocation_is_linear;
+          test_case "push_back_same_height_fast_path_allocation"
+            test_push_back_same_height_fast_path_allocation;
           test_case "push_keeps_height_logarithmic"
             test_push_keeps_height_logarithmic;
           test_case "regular_builds_omit_size_tables"
