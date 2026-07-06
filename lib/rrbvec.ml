@@ -396,7 +396,7 @@ let rec set_node node index value =
         (set_node
            (Array.unsafe_get branch.children child_index)
            (index - previous_size) value);
-      make_branch children
+      Branch { branch with children }
 
 let push_back_impl v value =
   let tail_length = Array.length v.tail in
