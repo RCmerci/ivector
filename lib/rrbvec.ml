@@ -302,6 +302,12 @@ let prepend_value values value =
   Array.blit values 0 values' 1 length;
   values'
 
+let append_value values value =
+  let length = Array.length values in
+  let values' = Array.make (length + 1) value in
+  Array.blit values 0 values' 0 length;
+  values'
+
 let combine_children left right =
   match (left, right) with
   | Branch left_branch, Branch right_branch
@@ -404,7 +410,7 @@ let push_back_impl v value =
     {
       v with
       count = v.count + 1;
-      tail = append_arrays v.tail [| value |];
+      tail = append_value v.tail value;
     }
   else
     let root = append_full_leaf v.root (Leaf v.tail) in
