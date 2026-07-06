@@ -290,6 +290,26 @@ let test_invariants_reject_linear_height_degradation () =
   in
   check_invariant_failure_contains "height bound" "height bound" malformed
 
+let test_size_table_lookup_starts_from_radix_slot () =
+  let root =
+    Raw_branch
+      {
+        children =
+          [|
+            Raw_leaf [| 0 |];
+            Raw_leaf [| 1 |];
+            Raw_leaf [| 2 |];
+            Raw_leaf [| 3 |];
+          |];
+        sizes = Some [| 96; 97; 96; 97 |];
+        count = 97;
+        height = 1;
+        leaves = 4;
+      }
+  in
+  let values = raw_vector root in
+  check_int "size table lookup from radix slot" 3 (get values 96)
+
 let test_push_get_and_persistence () =
   List.iter
     (fun size ->
@@ -584,6 +604,8 @@ let () =
             test_invariants_reject_skinny_search_step;
           test_case "invariants_reject_linear_height_degradation"
             test_invariants_reject_linear_height_degradation;
+          test_case "size_table_lookup_starts_from_radix_slot"
+            test_size_table_lookup_starts_from_radix_slot;
           test_case "push_get_and_persistence" test_push_get_and_persistence;
           test_case "set_pop_and_peek" test_set_pop_and_peek;
           test_case "front_and_back_operations" test_front_and_back_operations;

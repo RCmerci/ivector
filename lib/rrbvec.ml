@@ -92,16 +92,6 @@ let make_with_edges head root tail =
     head;
   }
 
-let find_child sizes index =
-  let rec loop low high =
-    if low = high then low
-    else
-      let mid = (low + high) lsr 1 in
-      if index < Array.unsafe_get sizes mid then loop low mid
-      else loop (mid + 1) high
-  in
-  loop 0 (Array.length sizes - 1)
-
 let rec capacity_for_height height =
   if height < 0 then 0
   else if height = 0 then width
@@ -115,6 +105,15 @@ let radix_child_index height index =
   let shift = radix_shift height in
   if shift >= Sys.int_size then 0 else (index lsr shift) land (width - 1)
 
+let find_child sizes height index =
+  let length = Array.length sizes in
+  let start = min (length - 1) (radix_child_index height index) in
+  let rec loop child_index =
+    if index < Array.unsafe_get sizes child_index then child_index
+    else loop (child_index + 1)
+  in
+  loop start
+
 let radix_offset height child_index =
   let shift = radix_shift height in
   if shift >= Sys.int_size then 0 else child_index lsl shift
@@ -125,7 +124,7 @@ let child_range sizes height index =
       let child_index = radix_child_index height index in
       (child_index, radix_offset height child_index)
   | Some sizes ->
-      let child_index = find_child sizes index in
+      let child_index = find_child sizes height index in
       let previous_size =
         if child_index = 0 then 0 else Array.unsafe_get sizes (child_index - 1)
       in
