@@ -9,7 +9,6 @@ type 'a node =
       sizes : int array option;
       count : int;
       height : int;
-      leaves : int;
     }
 
 type 'a t = {
@@ -45,11 +44,6 @@ let node_height = function
   | Leaf _ -> 0
   | Branch branch -> branch.height
 
-let node_leaves = function
-  | Empty -> 0
-  | Leaf _ -> 1
-  | Branch branch -> branch.leaves
-
 let ceil_div a b = (a + b - 1) / b
 
 let single_child_branch child =
@@ -59,7 +53,6 @@ let single_child_branch child =
       sizes = None;
       count = node_count child;
       height = node_height child + 1;
-      leaves = node_leaves child;
     }
 
 let rec promote_to_height height child =
@@ -183,14 +176,12 @@ let make_branch_node children =
   let height = child_height + 1 in
   let child_capacity = capacity_for_height child_height in
   let regular = ref true in
-  let leaves = ref 0 in
   for i = 0 to length - 1 do
     let child = Array.unsafe_get children i in
     let child_count = node_count child in
     assert (child_count > 0);
     count := !count + child_count;
     if i < length - 1 then regular := !regular && child_count = child_capacity;
-    leaves := !leaves + node_leaves child;
   done;
   Branch
     {
@@ -198,7 +189,6 @@ let make_branch_node children =
       sizes = (if !regular then None else Some (build_sizes children));
       count = !count;
       height;
-      leaves = !leaves;
     }
 
 let make_branch children =
@@ -272,14 +262,12 @@ let update_sizes sizes start delta =
   done;
   sizes'
 
-let replace_branch_child node child_index child =
+let replace_branch_child node child_index child delta =
   match node with
   | Branch branch ->
       let children = Array.copy branch.children in
-      let old_child = Array.unsafe_get children child_index in
       assert (node_height child = branch.height - 1);
       Array.unsafe_set children child_index child;
-      let delta = node_count child - node_count old_child in
       let sizes =
         match branch.sizes with
         | None ->
@@ -296,16 +284,14 @@ let replace_branch_child node child_index child =
           sizes;
           count = branch.count + delta;
           height = branch.height;
-          leaves = branch.leaves - node_leaves old_child + node_leaves child;
         }
   | Empty | Leaf _ -> invalid_arg "expected branch"
 
-let append_branch_child node child =
+let append_branch_child node child child_count =
   match node with
   | Branch branch ->
       let length = Array.length branch.children in
       let children = append_child branch.children child in
-      let child_count = node_count child in
       let sizes =
         match branch.sizes with
         | None ->
@@ -323,16 +309,14 @@ let append_branch_child node child =
           sizes;
           count = branch.count + child_count;
           height = branch.height;
-          leaves = branch.leaves + node_leaves child;
         }
   | Empty | Leaf _ -> invalid_arg "expected branch"
 
-let prepend_branch_child node child =
+let prepend_branch_child node child child_count =
   match node with
   | Branch branch ->
       let length = Array.length branch.children in
       let children = prepend_child child branch.children in
-      let child_count = node_count child in
       let sizes =
         match branch.sizes with
         | None ->
@@ -353,7 +337,6 @@ let prepend_branch_child node child =
           sizes;
           count = branch.count + child_count;
           height = branch.height;
-          leaves = branch.leaves + node_leaves child;
         }
   | Empty | Leaf _ -> invalid_arg "expected branch"
 
@@ -371,7 +354,7 @@ let set_leaf_split result node =
   result.leaf_inserted <- false;
   result.leaf_node <- node
 
-let rec insert_leaf result height node leaf =
+let rec insert_leaf result height node leaf leaf_count =
   if height = 0 then set_leaf_split result leaf
   else
     match node with
@@ -383,15 +366,16 @@ let rec insert_leaf result height node leaf =
         if node_full_at_height child_height child then
           if branch_length < width then
             set_leaf_inserted result
-              (append_branch_child node (new_path child_height leaf))
+              (append_branch_child node (new_path child_height leaf) leaf_count)
           else set_leaf_split result (new_path height leaf)
         else (
-          insert_leaf result child_height child leaf;
+          insert_leaf result child_height child leaf leaf_count;
           if result.leaf_inserted then
             set_leaf_inserted result
-              (replace_branch_child node child_index result.leaf_node)
+              (replace_branch_child node child_index result.leaf_node leaf_count)
           else if branch_length < width then
-            set_leaf_inserted result (append_branch_child node result.leaf_node)
+            set_leaf_inserted result
+              (append_branch_child node result.leaf_node leaf_count)
           else set_leaf_split result (new_path height leaf))
     | Empty | Leaf _ -> set_leaf_split result leaf
 
@@ -404,11 +388,11 @@ let append_full_leaf root leaf =
       if node_full root then make_branch_node [| root; new_path height leaf |]
       else (
         let result = { leaf_inserted = false; leaf_node = Empty } in
-        insert_leaf result height root leaf;
+        insert_leaf result height root leaf (node_count leaf);
         if result.leaf_inserted then result.leaf_node
         else make_branch_node [| root; result.leaf_node |]))
 
-let rec insert_leaf_front result height node leaf =
+let rec insert_leaf_front result height node leaf leaf_count =
   if height = 0 then set_leaf_split result leaf
   else
     match node with
@@ -419,14 +403,16 @@ let rec insert_leaf_front result height node leaf =
         if node_full_at_height child_height child then
           if branch_length < width then
             set_leaf_inserted result
-              (prepend_branch_child node (new_path child_height leaf))
+              (prepend_branch_child node (new_path child_height leaf) leaf_count)
           else set_leaf_split result (new_path height leaf)
         else (
-          insert_leaf_front result child_height child leaf;
+          insert_leaf_front result child_height child leaf leaf_count;
           if result.leaf_inserted then
-            set_leaf_inserted result (replace_branch_child node 0 result.leaf_node)
+            set_leaf_inserted result
+              (replace_branch_child node 0 result.leaf_node leaf_count)
           else if branch_length < width then
-            set_leaf_inserted result (prepend_branch_child node result.leaf_node)
+            set_leaf_inserted result
+              (prepend_branch_child node result.leaf_node leaf_count)
           else set_leaf_split result (new_path height leaf))
     | Empty | Leaf _ -> set_leaf_split result leaf
 
@@ -439,7 +425,7 @@ let prepend_full_leaf root leaf =
       if node_full root then make_branch_node [| new_path height leaf; root |]
       else (
         let result = { leaf_inserted = false; leaf_node = Empty } in
-        insert_leaf_front result height root leaf;
+        insert_leaf_front result height root leaf (node_count leaf);
         if result.leaf_inserted then result.leaf_node
         else make_branch_node [| result.leaf_node; root |]))
 
@@ -950,7 +936,7 @@ let to_list v = Array.to_list (to_array v)
   - Branch [sizes] are absent for radix-regular nodes. Relaxed branch [sizes]
     are cumulative child ranges, strictly increasing, and the last range equals
     the branch element count.
-  - Branch [count], [height], and [leaves] match their children.
+  - Branch [count] and [height] match their children.
   - A root [Branch] has more than one child; internal singleton branches are
     still allowed to preserve height.
   - Relaxed search steps and root height stay within smoke-test bounds.
@@ -1024,8 +1010,6 @@ let rec check_node root path node =
         branch.height;
       require path (branch.count > 0) "branch count %d must be positive"
         branch.count;
-      require path (branch.leaves > 0) "branch leaves %d must be positive"
-        branch.leaves;
       let expected_child_height = branch.height - 1 in
       let count = ref 0 in
       let leaves = ref 0 in
@@ -1061,9 +1045,6 @@ let rec check_node root path node =
       require path (branch.count = !count)
         "branch count must equal child count sum: expected %d, got %d" !count
         branch.count;
-      require path (branch.leaves = !leaves)
-        "branch leaves must equal child leaves sum: expected %d, got %d" !leaves
-        branch.leaves;
       (match branch.sizes with
       | None -> ()
       | Some sizes ->
@@ -1075,7 +1056,7 @@ let rec check_node root path node =
         (branch.count <= capacity_for_height branch.height)
         "branch count %d exceeds capacity %d for height %d" branch.count
         (capacity_for_height branch.height) branch.height;
-      (branch.count, branch.height, branch.leaves)
+      (branch.count, branch.height, !leaves)
 
 let check_tail v root_count =
   let head_length = Array.length v.head in

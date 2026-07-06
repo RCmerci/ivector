@@ -107,7 +107,6 @@ type 'a raw_node =
       sizes : int array option;
       count : int;
       height : int;
-      leaves : int;
     }
 
 type 'a raw_vector = {
@@ -126,18 +125,16 @@ let raw_branch children =
   let sizes = Array.make (Array.length children) 0 in
   let count = ref 0 in
   let height = ref (-1) in
-  let leaves = ref 0 in
   Array.iteri
     (fun index child ->
-      let child_count, child_height, child_leaves =
+      let child_count, child_height =
         match child with
-        | Raw_empty -> (0, -1, 0)
-        | Raw_leaf values -> (Array.length values, 0, 1)
-        | Raw_branch branch -> (branch.count, branch.height, branch.leaves)
+        | Raw_empty -> (0, -1)
+        | Raw_leaf values -> (Array.length values, 0)
+        | Raw_branch branch -> (branch.count, branch.height)
       in
       count := !count + child_count;
       height := max !height child_height;
-      leaves := !leaves + child_leaves;
       Array.unsafe_set sizes index !count)
     children;
   Raw_branch
@@ -146,7 +143,6 @@ let raw_branch children =
       sizes = Some sizes;
       count = !count;
       height = !height + 1;
-      leaves = !leaves;
     }
 
 let raw_vector root =
@@ -214,7 +210,6 @@ let test_invariants_report_malformed_leaf () =
            sizes = Some [| 0; 1 |];
            count = 1;
            height = 1;
-           leaves = 2;
          })
   in
   check_invariant_failure_contains "empty leaf" "leaf length must be positive"
@@ -238,7 +233,6 @@ let test_invariants_reject_child_height_mismatch () =
               sizes = Some [| 1; 3 |];
               count = 3;
               height = 2;
-              leaves = 3;
             };
         tail = [||];
         tailoff = 3;
@@ -265,7 +259,6 @@ let test_invariants_reject_linear_height_degradation () =
           sizes = None;
           count = 1;
           height;
-          leaves = 1;
         }
   in
   let root_height = 10 in
@@ -281,7 +274,6 @@ let test_invariants_reject_linear_height_degradation () =
               sizes = Some [| 1; 2 |];
               count = 2;
               height = root_height;
-              leaves = 2;
             };
         tail = [||];
         tailoff = 2;
@@ -304,7 +296,6 @@ let test_size_table_lookup_starts_from_radix_slot () =
         sizes = Some [| 96; 97; 96; 97 |];
         count = 97;
         height = 1;
-        leaves = 4;
       }
   in
   let values = raw_vector root in
@@ -600,7 +591,7 @@ let test_push_back_same_height_fast_path_allocation () =
   check_invariants "push_back same-height allocation" values;
   check_int "push_back same-height length" size (length values);
   check_int "push_back same-height last" (size - 1) (peek_back values);
-  check_allocated_less_than "push_back same-height allocation" 3_987_000.
+  check_allocated_less_than "push_back same-height allocation" 3_980_000.
     allocated
 
 let test_push_keeps_height_logarithmic () =
@@ -661,7 +652,7 @@ let test_push_front_same_height_fast_path_allocation () =
   check_int "push_front same-height length" size (length values);
   check_int "push_front same-height first" (size - 1) (peek_front values);
   check_int "push_front same-height last" 0 (peek_back values);
-  check_allocated_less_than "push_front same-height allocation" 4_052_000.
+  check_allocated_less_than "push_front same-height allocation" 4_045_000.
     allocated
 
 let test_fold_right_visits_values_in_order () =
