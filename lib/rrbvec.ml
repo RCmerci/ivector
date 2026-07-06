@@ -206,6 +206,18 @@ let node_full node =
 let rec new_path height leaf =
   if height = 0 then leaf else make_branch_node [| new_path (height - 1) leaf |]
 
+let append_child children child =
+  let length = Array.length children in
+  let children' = Array.make (length + 1) child in
+  Array.blit children 0 children' 0 length;
+  children'
+
+let prepend_child child children =
+  let length = Array.length children in
+  let children' = Array.make (length + 1) child in
+  Array.blit children 0 children' 1 length;
+  children'
+
 type 'a leaf_insert =
   | Inserted of 'a node
   | Split of 'a node
@@ -221,7 +233,7 @@ let rec insert_leaf height node leaf =
         if node_full child then
           let new_child = new_path child_height leaf in
           if Array.length branch.children < width then
-            Inserted (make_branch_node (Array.append branch.children [| new_child |]))
+            Inserted (make_branch_node (append_child branch.children new_child))
           else Split (new_path height leaf)
         else (
           match insert_leaf child_height child leaf with
@@ -232,7 +244,7 @@ let rec insert_leaf height node leaf =
           | Split new_child ->
               if Array.length branch.children < width then
                 Inserted
-                  (make_branch_node (Array.append branch.children [| new_child |]))
+                  (make_branch_node (append_child branch.children new_child))
               else Split (new_path height leaf))
     | Empty | Leaf _ -> Split leaf
 
@@ -258,7 +270,7 @@ let rec insert_leaf_front height node leaf =
         if node_full child then
           let new_child = new_path child_height leaf in
           if Array.length branch.children < width then
-            Inserted (make_branch_node (Array.append [| new_child |] branch.children))
+            Inserted (make_branch_node (prepend_child new_child branch.children))
           else Split (new_path height leaf)
         else (
           match insert_leaf_front child_height child leaf with
@@ -269,7 +281,7 @@ let rec insert_leaf_front height node leaf =
           | Split new_child ->
               if Array.length branch.children < width then
                 Inserted
-                  (make_branch_node (Array.append [| new_child |] branch.children))
+                  (make_branch_node (prepend_child new_child branch.children))
               else Split (new_path height leaf))
     | Empty | Leaf _ -> Split leaf
 
