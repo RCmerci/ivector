@@ -84,9 +84,6 @@ let list_random_sum values indices =
 let array_random_sum values indices =
   Array.fold_left (fun acc index -> acc + values.(index)) 0 indices
 
-let dynarray_random_sum values indices =
-  Array.fold_left (fun acc index -> acc + Dynarray.get values index) 0 indices
-
 let ivector_random_sum values indices =
   Array.fold_left (fun acc index -> acc + Ivector.get values index) 0 indices
 
@@ -97,12 +94,6 @@ let batvect_random_sum values indices =
   Array.fold_left (fun acc index -> acc + BatVect.get values index) 0 indices
 
 let array_push_front values value = Array.append [| value |] values
-
-let dynarray_push_front values value =
-  let values' = Dynarray.create () in
-  Dynarray.add_last values' value;
-  Dynarray.append values' values;
-  values'
 
 let rec list_drop count values =
   if count = 0 then values
@@ -123,9 +114,6 @@ let list_take count values =
 
 let list_sub values start length = list_drop start values |> list_take length
 
-let dynarray_sub values start length =
-  Dynarray.init length (fun i -> Dynarray.get values (start + i))
-
 let batvect_sub values start length =
   BatVect.sub values start length
 
@@ -134,13 +122,6 @@ let concat_nonempty combine = function
   | first :: rest -> List.fold_left combine first rest
 
 let sum_array values = Array.fold_left ( + ) 0 values
-
-let sum_dynarray values =
-  let sum = ref 0 in
-  for i = 0 to Dynarray.length values - 1 do
-    sum := !sum + Dynarray.get values i
-  done;
-  !sum
 
 let sum_ivector values = Ivector.fold_left ( + ) 0 values
 
@@ -165,11 +146,6 @@ let sum_batvect values = BatVect.fold_left ( + ) 0 values
 let update_array values indices =
   let values = Array.copy values in
   Array.iteri (fun i index -> values.(index) <- -(i + 1)) indices;
-  values
-
-let update_dynarray values indices =
-  let values = Dynarray.copy values in
-  Array.iteri (fun i index -> Dynarray.set values index (-(i + 1))) indices;
   values
 
 let update_list values indices =
@@ -202,14 +178,6 @@ let bench_build config =
   in
   let array_values =
     time "array build (init)" (fun () -> Array.init config.size Fun.id)
-  in
-  let dynarray_values =
-    time "Dynarray build (add_last)" (fun () ->
-        let values = Dynarray.create () in
-        for i = 0 to config.size - 1 do
-          Dynarray.add_last values i
-        done;
-        values)
   in
   let ivector_values =
     time "Ivector build (push)" (fun () ->
@@ -246,14 +214,6 @@ let bench_build config =
           else loop (i + 1) (array_push_front values i)
         in
         loop 0 [||])
-  in
-  let dynarray_push_front_values =
-    time "Dynarray build (push_front)" (fun () ->
-        let rec loop i values =
-          if i = config.size then values
-          else loop (i + 1) (dynarray_push_front values i)
-        in
-        loop 0 (Dynarray.create ()))
   in
   let ivector_push_front_values =
     time "Ivector build (push_front via concat)" (fun () ->
@@ -307,9 +267,6 @@ let bench_build config =
   check_length_and_sum "array build (push_front)"
     (Array.length array_push_front_values)
     (sum_array array_push_front_values);
-  check_length_and_sum "Dynarray build (push_front)"
-    (Dynarray.length dynarray_push_front_values)
-    (sum_dynarray dynarray_push_front_values);
   check_length_and_sum "Ivector build (push_front via concat)"
     (Ivector.length ivector_push_front_values)
     (sum_ivector ivector_push_front_values);
@@ -333,7 +290,6 @@ let bench_build config =
     failwith "BatVect build (of_list): unexpected sum";
   ( list_values,
     array_values,
-    dynarray_values,
     ivector_values,
     rrbvec_values,
     batvect_values )
@@ -341,7 +297,6 @@ let bench_build config =
 let bench_sequential_read
     ( list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -354,13 +309,6 @@ let bench_sequential_read
          let sum = ref 0 in
          for i = 0 to Array.length array_values - 1 do
            sum := !sum + array_values.(i)
-         done;
-         !sum));
-  check "Dynarray sequential read" expected
-    (time "Dynarray sequential read" (fun () ->
-         let sum = ref 0 in
-         for i = 0 to Dynarray.length dynarray_values - 1 do
-           sum := !sum + Dynarray.get dynarray_values i
          done;
          !sum));
   check "Ivector sequential read" expected
@@ -381,7 +329,6 @@ let bench_sequential_read
 let bench_random_read config
     ( _list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -392,8 +339,6 @@ let bench_random_read config
   in
   check "array random read"
     (time "array random read" (fun () -> array_random_sum array_values indices));
-  check "Dynarray random read"
-    (time "Dynarray random read" (fun () -> dynarray_random_sum dynarray_values indices));
   check "Ivector random read"
     (time "Ivector random read" (fun () -> ivector_random_sum ivector_values indices));
   check "Rrbvec random read"
@@ -407,7 +352,6 @@ let bench_random_read config
 let bench_updates config
     ( list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -416,11 +360,6 @@ let bench_updates config
     (time "array mutable set" (fun () ->
          let values = Array.copy array_values in
          Array.iteri (fun i index -> values.(index) <- -i) indices;
-         values));
-  ignore
-    (time "Dynarray mutable set" (fun () ->
-         let values = Dynarray.copy dynarray_values in
-         Array.iteri (fun i index -> Dynarray.set values index (-i)) indices;
          values));
   let ivector_updated =
     time "Ivector persistent set" (fun () ->
@@ -450,7 +389,6 @@ let bench_updates config
 let bench_subvec_concat config
     ( list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -475,12 +413,6 @@ let bench_subvec_concat config
   in
   check "array subvec length" slice_length (Array.length array_slice);
   check "array subvec sum" expected_slice_sum (sum_array array_slice);
-  let dynarray_slice =
-    time "Dynarray subvec (init/get)" (fun () ->
-        dynarray_sub dynarray_values start slice_length)
-  in
-  check "Dynarray subvec length" slice_length (Dynarray.length dynarray_slice);
-  check "Dynarray subvec sum" expected_slice_sum (sum_dynarray dynarray_slice);
   let ivector_slice =
     time "Ivector subvec" (fun () -> Ivector.subvec ivector_values start stop)
   in
@@ -503,8 +435,6 @@ let bench_subvec_concat config
   let list_right = list_sub list_values half (config.size - half) in
   let array_left = Array.sub array_values 0 half in
   let array_right = Array.sub array_values half (config.size - half) in
-  let dynarray_left = dynarray_sub dynarray_values 0 half in
-  let dynarray_right = dynarray_sub dynarray_values half (config.size - half) in
   let ivector_left = Ivector.subvec ivector_values 0 half in
   let ivector_right = Ivector.subvec ivector_values half config.size in
   check_ivector_invariants "Ivector concat left" ivector_left;
@@ -526,14 +456,6 @@ let bench_subvec_concat config
   in
   check "array concat length" config.size (Array.length array_concat);
   check "array concat sum" expected_concat_sum (sum_array array_concat);
-  let dynarray_concat =
-    time "Dynarray concat (copy+append)" (fun () ->
-        let values = Dynarray.copy dynarray_left in
-        Dynarray.append values dynarray_right;
-        values)
-  in
-  check "Dynarray concat length" config.size (Dynarray.length dynarray_concat);
-  check "Dynarray concat sum" expected_concat_sum (sum_dynarray dynarray_concat);
   let ivector_concat =
     time "Ivector concat" (fun () -> Ivector.concat ivector_left ivector_right)
   in
@@ -566,7 +488,6 @@ let chunk_bounds size chunks =
 let bench_read_write_after label config length
     ( list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -579,9 +500,6 @@ let bench_read_write_after label config length
   check ("array " ^ label ^ " sequential read") expected_sequential_sum
     (time ("array " ^ label ^ " sequential read") (fun () ->
          sum_array array_values));
-  check ("Dynarray " ^ label ^ " sequential read") expected_sequential_sum
-    (time ("Dynarray " ^ label ^ " sequential read") (fun () ->
-         sum_dynarray dynarray_values));
   check ("Ivector " ^ label ^ " sequential read") expected_sequential_sum
     (time ("Ivector " ^ label ^ " sequential read") (fun () ->
          sum_ivector ivector_values));
@@ -620,9 +538,6 @@ let bench_read_write_after label config length
   check ("array " ^ label ^ " random read") expected_read_sum
     (time ("array " ^ label ^ " random read") (fun () ->
          array_random_sum array_values read_indices));
-  check ("Dynarray " ^ label ^ " random read") expected_read_sum
-    (time ("Dynarray " ^ label ^ " random read") (fun () ->
-         dynarray_random_sum dynarray_values read_indices));
   check ("Ivector " ^ label ^ " random read") expected_read_sum
     (time ("Ivector " ^ label ^ " random read") (fun () ->
          ivector_random_sum ivector_values read_indices));
@@ -641,12 +556,6 @@ let bench_read_write_after label config length
         update_array array_values update_indices)
   in
   let expected_update_sum = sum_array array_updated in
-  let dynarray_updated =
-    time ("Dynarray " ^ label ^ " set") (fun () ->
-        update_dynarray dynarray_values update_indices)
-  in
-  check ("Dynarray " ^ label ^ " set") expected_update_sum
-    (sum_dynarray dynarray_updated);
   let ivector_updated =
     time ("Ivector " ^ label ^ " set") (fun () ->
         update_ivector ivector_values update_indices)
@@ -677,7 +586,6 @@ let bench_read_write_after label config length
 let bench_repeated_concat_subvec config
     ( list_values,
       array_values,
-      dynarray_values,
       ivector_values,
       rrbvec_values,
       batvect_values ) =
@@ -698,16 +606,6 @@ let bench_repeated_concat_subvec config
             bounds
             |> List.map (fun (start, length) -> Array.sub array_values start length)
             |> concat_nonempty Array.append)
-      in
-      let dynarray_concat =
-        time "Dynarray repeated concat build" (fun () ->
-            bounds
-            |> List.map (fun (start, length) ->
-                   dynarray_sub dynarray_values start length)
-            |> concat_nonempty (fun left right ->
-                   let values = Dynarray.copy left in
-                   Dynarray.append values right;
-                   values))
       in
       let ivector_concat =
         time "Ivector repeated concat build" (fun () ->
@@ -734,8 +632,6 @@ let bench_repeated_concat_subvec config
       check_rrbvec_invariants "Rrbvec repeated concat build" rrbvec_concat;
       check "list repeated concat length" config.size (List.length list_concat);
       check "array repeated concat length" config.size (Array.length array_concat);
-      check "Dynarray repeated concat length" config.size
-        (Dynarray.length dynarray_concat);
       check "Ivector repeated concat length" config.size
         (Ivector.length ivector_concat);
       check "Rrbvec repeated concat length" config.size
@@ -745,7 +641,6 @@ let bench_repeated_concat_subvec config
       bench_read_write_after "repeated concat" config config.size
         ( list_concat,
           array_concat,
-          dynarray_concat,
           ivector_concat,
           rrbvec_concat,
           batvect_concat ));
@@ -768,14 +663,6 @@ let bench_repeated_concat_subvec config
               else loop (steps - 1) (length - 2) (Array.sub values 1 (length - 2))
             in
             loop subvec_steps config.size array_values)
-      in
-      let dynarray_subvec =
-        time "Dynarray repeated subvec build" (fun () ->
-            let rec loop steps length values =
-              if steps = 0 then values
-              else loop (steps - 1) (length - 2) (dynarray_sub values 1 (length - 2))
-            in
-            loop subvec_steps config.size dynarray_values)
       in
       let ivector_subvec =
         time "Ivector repeated subvec build" (fun () ->
@@ -811,8 +698,6 @@ let bench_repeated_concat_subvec config
       check_rrbvec_invariants "Rrbvec repeated subvec build" rrbvec_subvec;
       check "list repeated subvec length" final_length (List.length list_subvec);
       check "array repeated subvec length" final_length (Array.length array_subvec);
-      check "Dynarray repeated subvec length" final_length
-        (Dynarray.length dynarray_subvec);
       check "Ivector repeated subvec length" final_length
         (Ivector.length ivector_subvec);
       check "Rrbvec repeated subvec length" final_length
@@ -822,7 +707,6 @@ let bench_repeated_concat_subvec config
       bench_read_write_after "repeated subvec" config final_length
         ( list_subvec,
           array_subvec,
-          dynarray_subvec,
           ivector_subvec,
           rrbvec_subvec,
           batvect_subvec ))
@@ -889,16 +773,6 @@ let bench_deep_concat config =
     (List.fold_left ( + ) 0 batvect_values_list)
 
 let bench_push_pop config =
-  ignore
-    (time "Dynarray push then pop" (fun () ->
-         let values = Dynarray.create () in
-         for i = 0 to config.size - 1 do
-           Dynarray.add_last values i
-         done;
-         for _ = 1 to config.size do
-           Dynarray.remove_last values
-         done;
-         values));
   let ivector_after_push_pop =
     time "Ivector push then pop" (fun () ->
          let rec push_loop i values =
@@ -940,7 +814,7 @@ let () =
     config.updates;
   Printf.printf
     "Note: list, Ivector, Rrbvec, and BatVect update benchmarks are persistent; \
-     array and Dynarray updates are mutable.\n\n";
+     array updates are mutable.\n\n";
   let values = run_group "Build" (fun () -> bench_build config) in
   run_group "Sequential read" (fun () -> bench_sequential_read values);
   run_group "Random read" (fun () -> bench_random_read config values);
