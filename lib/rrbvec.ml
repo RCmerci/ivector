@@ -542,23 +542,21 @@ let fold_array_right_range f values start stop acc =
   done;
   !acc
 
+let rec fold_left_node f acc node =
+  match node with
+  | Empty -> acc
+  | Leaf values -> fold_array_range f acc values 0 (Array.length values)
+  | Branch branch ->
+      let acc = ref acc in
+      for i = 0 to Array.length branch.children - 1 do
+        acc := fold_left_node f !acc (Array.unsafe_get branch.children i)
+      done;
+      !acc
+
 let fold_left f acc v =
-  let acc = ref (fold_array_range f acc v.head 0 (Array.length v.head)) in
-  let stack = ref [ v.root ] in
-  while !stack <> [] do
-    match !stack with
-    | [] -> ()
-    | node :: rest -> (
-        stack := rest;
-        match node with
-        | Empty -> ()
-        | Leaf values -> acc := fold_array_range f !acc values 0 (Array.length values)
-        | Branch branch ->
-            for i = Array.length branch.children - 1 downto 0 do
-              stack := Array.unsafe_get branch.children i :: !stack
-            done)
-  done;
-  fold_array_range f !acc v.tail 0 (Array.length v.tail)
+  let acc = fold_array_range f acc v.head 0 (Array.length v.head) in
+  let acc = fold_left_node f acc v.root in
+  fold_array_range f acc v.tail 0 (Array.length v.tail)
 
 let rec fold_right_node f node acc =
   match node with
