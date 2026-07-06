@@ -1,3 +1,9 @@
 (test
  (name test_ivector)
+ (modules test_ivector)
+ (libraries ivector alcotest))
+
+(test
+ (name test_rrbvec)
+ (modules test_rrbvec)
  (libraries ivector alcotest))

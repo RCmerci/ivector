@@ -1,3 +1,4 @@
 (library
  (name ivector)
- (public_name ivector))
+ (public_name ivector)
+ (wrapped false))
