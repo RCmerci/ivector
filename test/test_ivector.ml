@@ -59,8 +59,7 @@ let assert_append_balanced name v =
       if Obj.is_int root then (0, 1)
       else
         match Obj.tag root with
-        | 2 -> (0, 1)
-        | 3 ->
+        | 2 ->
             let left = Obj.magic (Obj.field root 0) in
             let right = Obj.magic (Obj.field root 1) in
             let left_height, left_leaves = loop left in
@@ -72,6 +71,11 @@ let assert_append_balanced name v =
         | _ -> (0, 1)
   in
   ignore (loop v)
+
+let assert_materialized name v =
+  let record = Obj.repr v in
+  let shift = Obj.magic (Obj.field record 1) in
+  check name (shift <> -1)
 
 let test_empty () =
   let v = empty in
@@ -262,7 +266,7 @@ let test_to_array_large_allocation_avoids_intermediate_list () =
   check "large to_array allocation"
     (allocated < (float_of_int size *. 16.0))
 
-let test_to_array_supports_views () =
+let test_to_array_supports_subvec_and_concat () =
   let base = of_array (Array.init 80 Fun.id) in
   check_array "subvec to_array"
     (Array.init 53 (fun i -> i + 17))
@@ -270,16 +274,24 @@ let test_to_array_supports_views () =
   check_array "concat to_array" (Array.init 80 Fun.id)
     (to_array (concat (subvec base 0 40) (subvec base 40 80)))
 
-let test_materializing_view_for_push_uses_linear_array_storage () =
+let test_subvec_returns_materialized_vector () =
+  let base = of_array (Array.init 1050 Fun.id) in
+  let slice = subvec base 31 1030 in
+  assert_materialized "subvec materialized vector" slice;
+  check_list "subvec materialized values" (List.init 999 (fun i -> i + 31))
+    (to_list slice)
+
+let test_subvec_uses_bulk_array_storage () =
   let size = 100_000 in
-  let view = subvec (of_array (Array.init size Fun.id)) 0 size in
+  let base = of_array (Array.init size Fun.id) in
   Gc.compact ();
   let before = Gc.allocated_bytes () in
-  let pushed = push view (-1) in
+  let slice = subvec base 17 (size - 17) in
   let allocated = Gc.allocated_bytes () -. before in
-  check_int "materialized view push length" (size + 1) (length pushed);
-  check_int "materialized view push last" (-1) (peek pushed);
-  check_allocated_less_than "materialized view push allocation"
+  check_int "bulk subvec length" (size - 34) (length slice);
+  check_int "bulk subvec first" 17 (get slice 0);
+  check_int "bulk subvec last" (size - 18) (peek slice);
+  check_allocated_less_than "bulk subvec allocation"
     (float_of_int size *. 100.0)
     allocated
 
@@ -308,7 +320,7 @@ let test_of_seq_consumes_input_once_in_order () =
   check_int "of_seq consumes input once" 40 !next;
   check_list "of_seq input order" (range 40) (to_list v)
 
-let test_to_seq_supports_views () =
+let test_to_seq_supports_subvec_and_concat () =
   let base = of_array (Array.init 80 Fun.id) in
   check_list "subvec to_seq"
     (List.init 53 (fun i -> i + 17))
@@ -376,7 +388,7 @@ let test_concat_handles_empty_vectors () =
   check_list "concat empty right" [ 1; 2; 3 ] (to_list (concat v empty));
   check_list "concat empty empty" [] (to_list (concat empty empty))
 
-let test_views_support_vector_operations () =
+let test_subvec_and_concat_support_vector_operations () =
   let base = of_list (range 80) in
   let slice = subvec base 17 70 in
   let slice_values = List.init 53 (fun i -> i + 17) in
@@ -513,12 +525,12 @@ let () =
         test_of_array_large_allocation_is_linear_in_array_storage );
       ( "to_array_large_allocation_avoids_intermediate_list",
         test_to_array_large_allocation_avoids_intermediate_list );
-      ("to_array_supports_views", test_to_array_supports_views);
-      ( "materializing_view_for_push_uses_linear_array_storage",
-        test_materializing_view_for_push_uses_linear_array_storage );
+      ("to_array_supports_subvec_and_concat", test_to_array_supports_subvec_and_concat);
+      ("subvec_returns_materialized_vector", test_subvec_returns_materialized_vector);
+      ("subvec_uses_bulk_array_storage", test_subvec_uses_bulk_array_storage);
       ("of_seq_and_to_seq_roundtrip", test_of_seq_and_to_seq_roundtrip);
       ("of_seq_consumes_input_once_in_order", test_of_seq_consumes_input_once_in_order);
-      ("to_seq_supports_views", test_to_seq_supports_views);
+      ("to_seq_supports_subvec_and_concat", test_to_seq_supports_subvec_and_concat);
       ("fold_left_visits_values_in_order", test_fold_left_visits_values_in_order);
       ("fold_left_empty_keeps_accumulator", test_fold_left_empty_keeps_accumulator);
       ("map_preserves_order_and_length", test_map_preserves_order_and_length);
@@ -527,7 +539,8 @@ let () =
       ("subvec_rejects_invalid_ranges", test_subvec_rejects_invalid_ranges);
       ("concat_preserves_order_and_operands", test_concat_preserves_order_and_operands);
       ("concat_handles_empty_vectors", test_concat_handles_empty_vectors);
-      ("views_support_vector_operations", test_views_support_vector_operations);
+      ( "subvec_and_concat_support_vector_operations",
+        test_subvec_and_concat_support_vector_operations );
       ("deep_concat_traversal_is_stack_safe", test_deep_concat_traversal_is_stack_safe);
       ("deep_concat_to_array_is_stack_safe", test_deep_concat_to_array_is_stack_safe);
       ( "left_associated_concat_stays_balanced",

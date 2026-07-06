@@ -1,5 +1,5 @@
 let bits = 5
-let view_shift = -1
+let append_shift = -1
 let width = 1 lsl bits
 let mask = width - 1
 let append_balance_slack = 8
@@ -9,7 +9,6 @@ type 'a node =
   | Empty
   | Branch of 'a node array
   | Leaf of 'a array
-  | View of { base : 'a t; start : int }
   | Append of { left : 'a t; right : 'a t }
 and 'a t = {
   count : int;
@@ -52,7 +51,7 @@ let make_materialized ~count ~shift ~root ~tail ~tailoff =
 let raw_append left right append_height append_leaves =
   {
     count = left.count + right.count;
-    shift = view_shift;
+    shift = append_shift;
     root = Append { left; right };
     tail = [||];
     tailoff = max_int;
@@ -99,9 +98,8 @@ let get_shift_10 root index =
 let rec get v index =
   if index < 0 || index >= v.count then invalid_index ();
   if index >= v.tailoff then Array.unsafe_get v.tail (index land mask)
-  else if v.shift = view_shift then
+  else if v.shift = append_shift then
     match v.root with
-    | View { base; start } -> get base (start + index)
     | Append { left; right } ->
         if index < left.count then get left index else get right (index - left.count)
     | _ -> invalid_arg "corrupt vector"
@@ -175,8 +173,8 @@ let blit_materialized_range dst dst_pos v start stop =
   in
   loop start dst_pos
 
-let blit_to_array dst v =
-  let first_job = (v, 0, v.count, 0) in
+let blit_range_to_array dst v start stop dst_pos =
+  let first_job = (v, start, stop, dst_pos) in
   let stack = ref (Array.make 16 first_job) in
   let stack_length = ref 1 in
   let push value =
@@ -194,11 +192,9 @@ let blit_to_array dst v =
   while !stack_length > 0 do
     let v, start, stop, dst_pos = pop () in
     if start <> stop then
-      if v.shift <> view_shift then blit_materialized_range dst dst_pos v start stop
+      if v.shift <> append_shift then blit_materialized_range dst dst_pos v start stop
       else
         match v.root with
-        | View { base; start = base_start } ->
-            push (base, base_start + start, base_start + stop, dst_pos)
         | Append { left; right } ->
             if stop <= left.count then push (left, start, stop, dst_pos)
             else if start >= left.count then
@@ -209,6 +205,9 @@ let blit_to_array dst v =
               push (left, start, left.count, dst_pos))
         | _ -> invalid_arg "corrupt vector"
   done
+
+let blit_to_array dst v =
+  blit_range_to_array dst v 0 v.count 0
 
 let to_array v =
   if v.count = 0 then [||]
@@ -242,7 +241,7 @@ let append_tail tail value =
   tail'
 
 let rec push v value =
-  if v.shift = view_shift then push (materialize v) value
+  if v.shift = append_shift then push (materialize v) value
   else
     let count = v.count + 1 in
     if Array.length v.tail < width then
@@ -264,7 +263,7 @@ and materialize v =
 
 let append_materialized_chunk_if_room left right =
   if
-    left.shift <> view_shift && right.shift <> view_shift && right.count <= width
+    left.shift <> append_shift && right.shift <> append_shift && right.count <= width
     && left.count + right.count <= append_chunk_limit
   then
     let count = left.count + right.count in
@@ -278,12 +277,11 @@ let append_materialized_chunk_if_room left right =
   else None
 
 let rec collect_append_leaves v acc =
-  if v.shift <> view_shift then v :: acc
+  if v.shift <> append_shift then v :: acc
   else
     match v.root with
     | Append { left; right } ->
         collect_append_leaves left (collect_append_leaves right acc)
-    | View _ -> v :: acc
     | _ -> invalid_arg "corrupt vector"
 
 let rec make_append left right =
@@ -299,28 +297,27 @@ let rec make_append left right =
         else rebalance_append left right
 
 and append_small_to_rightmost left right =
-  if right.shift = view_shift || right.count > width then None
-  else if left.shift <> view_shift then append_materialized_chunk_if_room left right
+  if right.shift = append_shift || right.count > width then None
+  else if left.shift <> append_shift then append_materialized_chunk_if_room left right
   else
     match left.root with
     | Append { left = left_left; right = left_right } -> (
         match append_small_to_rightmost left_right right with
         | None -> None
         | Some merged_right -> Some (make_append left_left merged_right))
-    | View _ -> None
     | _ -> invalid_arg "corrupt vector"
 
 and rebalance_append left right =
   if left.append_height > right.append_height then
     match left.root with
     | Append { left = left_left; right = left_right }
-      when left.shift = view_shift ->
+      when left.shift = append_shift ->
         make_append left_left (make_append left_right right)
     | _ -> rebuild_append left right
   else
     match right.root with
     | Append { left = right_left; right = right_right }
-      when right.shift = view_shift ->
+      when right.shift = append_shift ->
         make_append (make_append left right_left) right_right
     | _ -> rebuild_append left right
 
@@ -338,26 +335,9 @@ and rebuild_append left right =
   in
   build 0 (Array.length leaves)
 
-let make_view base start count =
-  let base, start =
-    match base.root with
-    | View { base; start = base_start } when base.shift = view_shift ->
-        (base, base_start + start)
-    | _ -> (base, start)
-  in
-  {
-    count;
-    shift = view_shift;
-    root = View { base; start };
-    tail = [||];
-    tailoff = max_int;
-    append_height = 0;
-    append_leaves = 1;
-  }
-
 let rec set v index value =
   if index < 0 || index > v.count then invalid_index ();
-  if v.shift = view_shift then set (materialize v) index value
+  if v.shift = append_shift then set (materialize v) index value
   else if index = v.count then push v value
   else if index >= v.tailoff then (
     let tail = Array.copy v.tail in
@@ -367,7 +347,7 @@ let rec set v index value =
 
 let peek v =
   if v.count = 0 then invalid_index ();
-  if v.shift = view_shift then get v (v.count - 1)
+  if v.shift = append_shift then get v (v.count - 1)
   else v.tail.((v.count - 1) land mask)
 
 let rec pop_tail count level node =
@@ -392,7 +372,7 @@ let rec pop_tail count level node =
 
 let rec pop v =
   if v.count = 0 then invalid_index ()
-  else if v.shift = view_shift then pop (materialize v)
+  else if v.shift = append_shift then pop (materialize v)
   else if v.count = 1 then empty
   else if Array.length v.tail > 1 then
     let count = v.count - 1 in
@@ -439,10 +419,8 @@ let rec fold_node f acc node =
 
 let rec fold_range f acc v start stop =
   if start = stop then acc
-  else if v.shift = view_shift then
+  else if v.shift = append_shift then
     match v.root with
-    | View { base; start = base_start } ->
-        fold_range f acc base (base_start + start) (base_start + stop)
     | Append { left; right } ->
         if stop <= left.count then fold_range f acc left start stop
         else if start >= left.count then
@@ -487,10 +465,9 @@ let fold_left_iterative f acc v =
   let acc = ref acc in
   while !stack_length > 0 do
     let v = pop () in
-    if v.shift <> view_shift then acc := fold_materialized f !acc v
+    if v.shift <> append_shift then acc := fold_materialized f !acc v
     else
       match v.root with
-      | View { base; start } -> acc := fold_range f !acc base start (start + v.count)
       | Append { left; right } ->
           push right;
           push left
@@ -499,10 +476,9 @@ let fold_left_iterative f acc v =
   !acc
 
 let rec fold_left_recursive f acc v =
-  if v.shift <> view_shift then fold_materialized f acc v
+  if v.shift <> append_shift then fold_materialized f acc v
   else
     match v.root with
-    | View { base; start } -> fold_range f acc base start (start + v.count)
     | Append { left; right } -> fold_left_recursive f (fold_left_recursive f acc left) right
     | _ -> invalid_arg "corrupt vector"
 
@@ -516,7 +492,11 @@ let map f v = fold_left (fun acc value -> push acc (f value)) empty v
 let subvec v start stop =
   if start < 0 || stop < start || stop > v.count then invalid_index ();
   let count = stop - start in
-  make_view v start count
+  if count = 0 then empty
+  else
+    let values = Array.make count (get v start) in
+    blit_range_to_array values v start stop 0;
+    of_array values
 
 let concat left right = make_append left right
 
