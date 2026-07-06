@@ -330,11 +330,11 @@ let combine_children left right =
   | Branch branch, node
     when branch.height = node_height node + 1
          && Array.length branch.children < width ->
-      Some (Array.append branch.children [| node |])
+      Some (append_child branch.children node)
   | node, Branch branch
     when node_height node + 1 = branch.height
          && Array.length branch.children < width ->
-      Some (Array.append [| node |] branch.children)
+      Some (prepend_child node branch.children)
   | _ -> None
 
 let array_without_last values =
