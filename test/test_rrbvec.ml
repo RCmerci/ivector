@@ -670,6 +670,70 @@ let test_regular_builds_omit_size_tables () =
   check_int "of_array radix get" 12_345 (get from_array 12_345);
   check_int "push_back radix get" 12_345 (get pushed 12_345)
 
+let push_back_range start count values =
+  let rec loop i acc =
+    if i = count then acc else loop (i + 1) (push_back acc (start + i))
+  in
+  loop 0 values
+
+let test_of_array_keeps_right_edge_in_tail () =
+  let single_leaf = of_array (Array.init rrb_width Fun.id) in
+  check_invariants "single leaf of_array" single_leaf;
+  check_int "single leaf root height" (-1) (internal_height single_leaf);
+  check_int "single leaf tailoff" 0 (header_tailoff single_leaf);
+  check_int "single leaf tail length" rrb_width
+    (header_tail_length single_leaf);
+  let partial = of_array (Array.init (rrb_width + 8) Fun.id) in
+  check_invariants "partial right edge of_array" partial;
+  check_int "partial right edge tailoff" rrb_width (header_tailoff partial);
+  check_int "partial right edge tail length" 8 (header_tail_length partial);
+  check_int "partial right edge size tables" 0
+    (regular_size_table_count partial);
+  let appended = push_back_range (rrb_width + 8) (rrb_width + 1) partial in
+  check_invariants "partial right edge append" appended;
+  check_int "partial right edge append size tables" 0
+    (regular_size_table_count appended);
+  check_list "partial right edge append order"
+    (range ((2 * rrb_width) + 9))
+    (to_list appended);
+  let exact = of_array (Array.init (2 * rrb_width) Fun.id) in
+  check_invariants "exact leaf multiple of_array" exact;
+  check_int "exact leaf multiple tailoff" rrb_width (header_tailoff exact);
+  check_int "exact leaf multiple tail length" rrb_width
+    (header_tail_length exact);
+  check_int "exact leaf multiple size tables" 0
+    (regular_size_table_count exact);
+  check_list "exact leaf multiple order" (range (2 * rrb_width))
+    (to_list exact)
+
+let test_subvec_keeps_right_edge_in_tail () =
+  let values = of_array (Array.init (3 * rrb_width) Fun.id) in
+  let partial = subvec values 0 (rrb_width + 8) in
+  check_invariants "partial right edge subvec" partial;
+  check_int "partial right edge subvec tailoff" rrb_width
+    (header_tailoff partial);
+  check_int "partial right edge subvec tail length" 8
+    (header_tail_length partial);
+  check_int "partial right edge subvec size tables" 0
+    (regular_size_table_count partial);
+  let appended = push_back_range (rrb_width + 8) (rrb_width + 1) partial in
+  check_invariants "partial right edge subvec append" appended;
+  check_int "partial right edge subvec append size tables" 0
+    (regular_size_table_count appended);
+  check_list "partial right edge subvec append order"
+    (range ((2 * rrb_width) + 9))
+    (to_list appended);
+  let exact = subvec values 0 (2 * rrb_width) in
+  check_invariants "exact leaf multiple subvec" exact;
+  check_int "exact leaf multiple subvec tailoff" rrb_width
+    (header_tailoff exact);
+  check_int "exact leaf multiple subvec tail length" rrb_width
+    (header_tail_length exact);
+  check_int "exact leaf multiple subvec size tables" 0
+    (regular_size_table_count exact);
+  check_list "exact leaf multiple subvec order" (range (2 * rrb_width))
+    (to_list exact)
+
 let test_push_front_large_allocation_is_linear () =
   let size = 20_000 in
   Gc.compact ();
@@ -796,6 +860,10 @@ let () =
             test_push_keeps_height_logarithmic;
           test_case "regular_builds_omit_size_tables"
             test_regular_builds_omit_size_tables;
+          test_case "of_array_keeps_right_edge_in_tail"
+            test_of_array_keeps_right_edge_in_tail;
+          test_case "subvec_keeps_right_edge_in_tail"
+            test_subvec_keeps_right_edge_in_tail;
           test_case "push_front_large_allocation_is_linear"
             test_push_front_large_allocation_is_linear;
           test_case "push_front_same_height_fast_path_allocation"

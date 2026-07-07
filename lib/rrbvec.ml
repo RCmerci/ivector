@@ -80,15 +80,6 @@ let normalize_child_heights children =
       done;
       normalized
 
-let make_vector root =
-  {
-    count = node_count root;
-    root;
-    tail = [||];
-    tailoff = node_count root;
-    head = [||];
-  }
-
 let make_with_edges head root tail =
   let root_count = node_count root in
   {
@@ -195,6 +186,70 @@ let make_branch children =
   let length = Array.length children in
   assert (length > 0);
   if length = 1 then Array.unsafe_get children 0 else make_branch_node children
+
+let rec last_leaf_node = function
+  | Empty -> invalid_index ()
+  | Leaf values -> values
+  | Branch branch ->
+      last_leaf_node
+        (Array.unsafe_get branch.children (Array.length branch.children - 1))
+
+let rec first_leaf_node = function
+  | Empty -> invalid_index ()
+  | Leaf values -> values
+  | Branch branch -> first_leaf_node (Array.unsafe_get branch.children 0)
+
+let rec remove_last_leaf_node = function
+  | Empty -> None
+  | Leaf _ -> None
+  | Branch branch ->
+      let child_index = Array.length branch.children - 1 in
+      let children =
+        match remove_last_leaf_node (Array.unsafe_get branch.children child_index) with
+        | None -> Array.sub branch.children 0 child_index
+        | Some child ->
+            let children = Array.copy branch.children in
+            Array.unsafe_set children child_index child;
+            children
+      in
+      if Array.length children = 0 then None else Some (make_branch children)
+
+let rec remove_first_leaf_node = function
+  | Empty -> None
+  | Leaf _ -> None
+  | Branch branch ->
+      let children =
+        match remove_first_leaf_node (Array.unsafe_get branch.children 0) with
+        | None -> Array.sub branch.children 1 (Array.length branch.children - 1)
+        | Some child ->
+            let children = Array.copy branch.children in
+            Array.unsafe_set children 0 child;
+            children
+      in
+      if Array.length children = 0 then None else Some (make_branch children)
+
+let make_vector root =
+  match root with
+  | Empty -> empty
+  | Leaf values -> make_with_edges [||] Empty values
+  | Branch _ ->
+      let tail = last_leaf_node root in
+      let root = remove_last_leaf_node root |> Option.value ~default:Empty in
+      let head, root =
+        match root with
+        | Empty -> ([||], Empty)
+        | Leaf values when Array.length values < width -> (values, Empty)
+        | Leaf _ -> ([||], root)
+        | Branch _ ->
+            let head = first_leaf_node root in
+            if Array.length head < width then
+              let root =
+                remove_first_leaf_node root |> Option.value ~default:Empty
+              in
+              (head, root)
+            else ([||], root)
+      in
+      make_with_edges head root tail
 
 let rebalance_branch_children children =
   let children = normalize_child_heights children in
@@ -588,44 +643,6 @@ let peek_back_impl v =
     let head_length = Array.length v.head in
     Array.unsafe_get v.head (head_length - 1)
 
-let rec last_leaf_node = function
-  | Empty -> invalid_index ()
-  | Leaf values -> values
-  | Branch branch ->
-      last_leaf_node
-        (Array.unsafe_get branch.children (Array.length branch.children - 1))
-
-let rec first_leaf_node = function
-  | Empty -> invalid_index ()
-  | Leaf values -> values
-  | Branch branch -> first_leaf_node (Array.unsafe_get branch.children 0)
-
-let rec remove_last_leaf_node = function
-  | Empty -> None
-  | Leaf _ -> None
-  | Branch branch ->
-      let child_index = Array.length branch.children - 1 in
-      let children =
-        match remove_last_leaf_node (Array.unsafe_get branch.children child_index) with
-        | None -> array_without_last branch.children
-        | Some child -> array_replace_last branch.children child
-      in
-      if Array.length children = 0 then None else Some (make_branch children)
-
-let rec remove_first_leaf_node = function
-  | Empty -> None
-  | Leaf _ -> None
-  | Branch branch ->
-      let children =
-        match remove_first_leaf_node (Array.unsafe_get branch.children 0) with
-        | None -> Array.sub branch.children 1 (Array.length branch.children - 1)
-        | Some child ->
-            let children = Array.copy branch.children in
-            Array.unsafe_set children 0 child;
-            children
-      in
-      if Array.length children = 0 then None else Some (make_branch children)
-
 let pop_back_impl v =
   if v.count = 0 then invalid_index ();
   let tail_length = Array.length v.tail in
@@ -786,14 +803,21 @@ let of_array values =
   let count = Array.length values in
   if count = 0 then empty
   else
-    let leaf_count = (count + width - 1) / width in
-    let leaves =
-      Array.init leaf_count (fun leaf_index ->
-          let start = leaf_index * width in
-          let stop = min count (start + width) in
-          Leaf (Array.sub values start (stop - start)))
+    let tail_length =
+      let remainder = count mod width in
+      if count <= width then count else if remainder = 0 then width else remainder
     in
-    make_vector (build_level leaves)
+    let tail_start = count - tail_length in
+    let tail = Array.sub values tail_start tail_length in
+    if tail_start = 0 then make_with_edges [||] Empty tail
+    else
+      let leaf_count = tail_start / width in
+      let leaves =
+        Array.init leaf_count (fun leaf_index ->
+            let start = leaf_index * width in
+            Leaf (Array.sub values start width))
+      in
+      make_with_edges [||] (build_level leaves) tail
 
 let leaf_slice values start stop =
   if start = 0 && stop = Array.length values then Leaf values
