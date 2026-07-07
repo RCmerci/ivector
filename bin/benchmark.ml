@@ -74,6 +74,8 @@ let range_sum start length = (start + start + length - 1) * length / 2
 
 let sum_rrbvec values = Rrbvec.fold_left ( + ) 0 values
 let sum_batvect values = BatVect.fold_left ( + ) 0 values
+let sum_list values = List.fold_left ( + ) 0 values
+let sum_array values = Array.fold_left ( + ) 0 values
 let map_value value = (value * 2) + 1
 let map_rrbvec values = Rrbvec.map map_value values
 let map_batvect values = BatVect.map map_value values
@@ -262,6 +264,29 @@ let verify_map config values =
   check "Rrbvec map sum" expected_sum (sum_rrbvec rrbvec_mapped);
   check "BatVect map sum" expected_sum (sum_batvect batvect_mapped)
 
+let verify_conversions config values =
+  let list_values = List.init config.size Fun.id in
+  let array_values = Array.init config.size Fun.id in
+  let expected_sum = range_sum 0 config.size in
+  let rrbvec_from_list = Rrbvec.of_list list_values in
+  let batvect_from_list = BatVect.of_list list_values in
+  let rrbvec_from_array = Rrbvec.of_array array_values in
+  let batvect_from_array = BatVect.of_array array_values in
+  check_rrbvec_invariants "Rrbvec of_list" rrbvec_from_list;
+  check_rrbvec_invariants "Rrbvec of_array" rrbvec_from_array;
+  check "Rrbvec of_list length" config.size (Rrbvec.length rrbvec_from_list);
+  check "BatVect of_list length" config.size (BatVect.length batvect_from_list);
+  check "Rrbvec of_array length" config.size (Rrbvec.length rrbvec_from_array);
+  check "BatVect of_array length" config.size (BatVect.length batvect_from_array);
+  check "Rrbvec of_list sum" expected_sum (sum_rrbvec rrbvec_from_list);
+  check "BatVect of_list sum" expected_sum (sum_batvect batvect_from_list);
+  check "Rrbvec of_array sum" expected_sum (sum_rrbvec rrbvec_from_array);
+  check "BatVect of_array sum" expected_sum (sum_batvect batvect_from_array);
+  check "Rrbvec to_list sum" expected_sum (sum_list (Rrbvec.to_list values.rrbvec));
+  check "BatVect to_list sum" expected_sum (sum_list (BatVect.to_list values.batvect));
+  check "Rrbvec to_array sum" expected_sum (sum_array (Rrbvec.to_array values.rrbvec));
+  check "BatVect to_array sum" expected_sum (sum_array (BatVect.to_array values.batvect))
+
 let verify_subvec_concat config values =
   let subvec_steps = min 8 ((config.size - 1) / 2) in
   let final_length = config.size - (2 * subvec_steps) in
@@ -302,7 +327,23 @@ let benchmark_groups config values =
   let update_indices = make_indices config.updates config.size in
   let subvec_steps = min 8 ((config.size - 1) / 2) in
   let bounds = chunk_bounds config.size (min 8 config.size) in
+  let list_values = List.init config.size Fun.id in
+  let array_values = Array.init config.size Fun.id in
   [
+    {
+      name = "Conversion";
+      cases =
+        [
+          { name = "Rrbvec of_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_list list_values))) };
+          { name = "BatVect of_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_list list_values))) };
+          { name = "Rrbvec to_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_list values.rrbvec))) };
+          { name = "BatVect to_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_list values.batvect))) };
+          { name = "Rrbvec of_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_array array_values))) };
+          { name = "BatVect of_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_array array_values))) };
+          { name = "Rrbvec to_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_array values.rrbvec))) };
+          { name = "BatVect to_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_array values.batvect))) };
+        ];
+    };
     {
       name = "Sequential write";
       cases =
@@ -461,6 +502,7 @@ let verify config values =
   check "BatVect random read" expected_reads (batvect_random_sum values.batvect read_indices);
   verify_random_write config values (make_indices config.updates config.size);
   verify_map config values;
+  verify_conversions config values;
   verify_subvec_concat config values;
   verify_push_pop config
 

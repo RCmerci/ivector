@@ -1068,6 +1068,18 @@ let test_fold_right_large_allocation_is_linear () =
   check_int "large fold_right sum" ((size * (size - 1)) / 2) sum;
   check_allocated_less_than "large fold_right allocation" 5_000_000. allocated
 
+let test_to_list_large_allocation_avoids_intermediate_array () =
+  let size = 100_000 in
+  let v = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let values = to_list v in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large to_list length" size (List.length values);
+  check_int "large to_list head" 0 (List.hd values);
+  check_int "large to_list last" (size - 1) (List.nth values (size - 1));
+  check_allocated_less_than "large to_list allocation" 3_000_000. allocated
+
 let test_map_large_allocation_is_leaf_linear () =
   let size = 100_000 in
   let v = of_array (Array.init size Fun.id) in
@@ -1197,6 +1209,8 @@ let () =
             test_fold_right_visits_values_in_order;
           test_case "fold_right_large_allocation_is_linear"
             test_fold_right_large_allocation_is_linear;
+          test_case "to_list_large_allocation_avoids_intermediate_array"
+            test_to_list_large_allocation_avoids_intermediate_array;
           test_case "map_large_allocation_is_leaf_linear"
             test_map_large_allocation_is_leaf_linear;
           test_case "map_visits_values_in_order"

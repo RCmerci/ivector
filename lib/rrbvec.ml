@@ -1119,7 +1119,7 @@ let prepend_arrat v values =
 
 let of_list values = of_array (Array.of_list values)
 
-let to_list v = Array.to_list (to_array v)
+let to_list v = fold_right (fun value acc -> value :: acc) v []
 
 (*
   Internal invariants checked by [invariants]:
