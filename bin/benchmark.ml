@@ -148,6 +148,30 @@ let build_batvect_front size =
   in
   loop 0 BatVect.empty
 
+let pop_back_rrbvec values =
+  let rec loop values =
+    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_back values))
+  in
+  loop values
+
+let pop_front_rrbvec values =
+  let rec loop values =
+    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_front values))
+  in
+  loop values
+
+let pop_back_batvect values =
+  let rec loop values =
+    if BatVect.is_empty values then values else loop (snd (BatVect.pop values))
+  in
+  loop values
+
+let pop_front_batvect values =
+  let rec loop values =
+    if BatVect.is_empty values then values else loop (snd (BatVect.shift values))
+  in
+  loop values
+
 let repeated_rrbvec_subvec steps values =
   let rec loop steps values =
     if steps = 0 then values
@@ -204,6 +228,18 @@ let verify_front_writes config =
   check "BatVect sequential write push_front length" config.size (BatVect.length batvect);
   check "Rrbvec sequential write push_front sum" expected_sum (sum_rrbvec rrbvec);
   check "BatVect sequential write push_front sum" expected_sum (sum_batvect batvect)
+
+let verify_sequential_pops values =
+  let rrbvec_back = pop_back_rrbvec values.rrbvec in
+  let rrbvec_front = pop_front_rrbvec values.rrbvec in
+  let batvect_back = pop_back_batvect values.batvect in
+  let batvect_front = pop_front_batvect values.batvect in
+  check_rrbvec_invariants "Rrbvec sequential pop_back" rrbvec_back;
+  check_rrbvec_invariants "Rrbvec sequential pop_front" rrbvec_front;
+  check "Rrbvec sequential pop_back length" 0 (Rrbvec.length rrbvec_back);
+  check "Rrbvec sequential pop_front length" 0 (Rrbvec.length rrbvec_front);
+  check "BatVect sequential pop_back length" 0 (BatVect.length batvect_back);
+  check "BatVect sequential pop_front length" 0 (BatVect.length batvect_front)
 
 let verify_random_write config values indices =
   let expected = expected_update_sum config.size indices in
@@ -262,6 +298,10 @@ let benchmark_groups config values =
           { name = "BatVect sequential write (append)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect config.size))) };
           { name = "Rrbvec sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_rrbvec_front config.size))) };
           { name = "BatVect sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect_front config.size))) };
+          { name = "Rrbvec sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_rrbvec values.rrbvec))) };
+          { name = "BatVect sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_batvect values.batvect))) };
+          { name = "Rrbvec sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_rrbvec values.rrbvec))) };
+          { name = "BatVect sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_batvect values.batvect))) };
         ];
     };
     {
@@ -399,6 +439,7 @@ let print_group (group : group) results =
 
 let verify config values =
   verify_front_writes config;
+  verify_sequential_pops values;
   let read_indices = make_indices config.reads config.size in
   let expected_reads = Array.fold_left ( + ) 0 read_indices in
   check "Rrbvec random read" expected_reads (rrbvec_random_sum values.rrbvec read_indices);
