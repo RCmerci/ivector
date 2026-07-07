@@ -1,0 +1,5 @@
+(library
+ (name rrbvec_native)
+ (public_name rrbvec-native)
+ (implements rrbvec_core)
+ (modes native byte))

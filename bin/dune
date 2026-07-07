@@ -1,4 +1,30 @@
 (executable
  (name benchmark)
  (modules benchmark)
- (libraries rrbvec batteries bechamel))
+ (libraries rrbvec-native batteries bechamel))
+
+(executable
+ (name benchmark_jsoo)
+ (modes js)
+ (modules benchmark_jsoo)
+ (libraries rrbvec-jsoo js_of_ocaml))
+
+(melange.emit
+ (target benchmark-melange)
+ (alias benchmark-melange)
+ (module_systems commonjs)
+ (modules benchmark_melange)
+ (preprocess
+  (pps melange.ppx))
+ (libraries rrbvec-melange))
+
+(rule
+ (alias benchmark-js)
+ (deps
+  benchmark-js.cljs
+  benchmark_jsoo.bc.js
+  (alias benchmark-melange)
+  benchmark-melange/bin/benchmark_melange.js)
+ (action
+  (system
+   "RRBVEC_JSOO_JS=$PWD/../../../../default/bin/benchmark_jsoo.bc.js RRBVEC_MELANGE_JS=$PWD/../../../../default/bin/benchmark-melange/bin/benchmark_melange.js RRBVEC_MELANGE_NODE_PATH=$PWD/../../../../default/bin/benchmark-melange/node_modules clojure -Sdeps '{:deps {org.clojure/clojurescript {:mvn/version \"1.11.132\"}}}' -M -m cljs.main -re node -i %{dep:benchmark-js.cljs} -e '(rrbvec.benchmark-js/-main \"--size\" \"20000\" \"--reads\" \"10000\" \"--updates\" \"5000\" \"--iterations\" \"10\")'")))

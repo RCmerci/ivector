@@ -75,7 +75,7 @@ let list_slice values start stop =
 let rrb_width = 32
 
 let internal_height v =
-  let root = Obj.field (Obj.repr v) 1 in
+  let root = Obj.field (Obj.field (Obj.repr v) 0) 1 in
   if Obj.is_int root then -1
   else
     match Obj.tag root with
@@ -99,15 +99,16 @@ let regular_size_table_count v =
           !count
       | _ -> Alcotest.fail "unexpected rrb node tag"
   in
-  node_size_table_count (Obj.field (Obj.repr v) 1)
+  node_size_table_count (Obj.field (Obj.field (Obj.repr v) 0) 1)
 
 let header_tail_length v =
-  Array.length (Obj.magic (Obj.field (Obj.repr v) 2) : int array)
+  Array.length (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 2) : int array)
 
-let header_tailoff v = (Obj.magic (Obj.field (Obj.repr v) 3) : int)
+let header_tailoff v =
+  (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 3) : int)
 
 let header_head_length v =
-  Array.length (Obj.magic (Obj.field (Obj.repr v) 4) : int array)
+  Array.length (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 4) : int array)
 
 type 'a raw_node =
   | Raw_empty
@@ -127,7 +128,11 @@ type 'a raw_vector = {
   head : 'a array;
 }
 
-let unsafe_vector raw = (Obj.magic raw : int t)
+type 'a raw_t =
+  | Raw_empty_vector
+  | Raw_vector of 'a raw_vector
+
+let unsafe_vector raw = (Obj.magic (Raw_vector raw) : int t)
 
 let raw_leaf length = Raw_leaf (Array.init length Fun.id)
 
@@ -226,6 +231,20 @@ let test_invariants_report_malformed_leaf () =
   in
   check_invariant_failure_contains "empty leaf" "leaf length must be positive"
     malformed
+
+let test_invariants_reject_zero_count_vector () =
+  let malformed =
+    unsafe_vector
+      {
+        count = 0;
+        root = Raw_empty;
+        tail = [||];
+        tailoff = 0;
+        head = [||];
+      }
+  in
+  check_invariant_failure_contains "zero-count vector"
+    "Vector count must be positive" malformed
 
 let test_invariants_reject_root_singleton_branch () =
   let malformed = raw_vector (raw_branch [| raw_leaf rrb_width |]) in
@@ -908,7 +927,7 @@ let test_push_back_same_height_fast_path_allocation () =
   check_invariants "push_back same-height allocation" values;
   check_int "push_back same-height length" size (length values);
   check_int "push_back same-height last" (size - 1) (peek_back values);
-  check_allocated_less_than "push_back same-height allocation" 3_980_000.
+  check_allocated_less_than "push_back same-height allocation" 4_500_000.
     allocated
 
 let test_push_keeps_height_logarithmic () =
@@ -1048,7 +1067,7 @@ let test_push_front_same_height_fast_path_allocation () =
   check_int "push_front same-height length" size (length values);
   check_int "push_front same-height first" (size - 1) (peek_front values);
   check_int "push_front same-height last" 0 (peek_back values);
-  check_allocated_less_than "push_front same-height allocation" 4_045_000.
+  check_allocated_less_than "push_front same-height allocation" 4_600_000.
     allocated
 
 let test_fold_right_visits_values_in_order () =
@@ -1155,6 +1174,8 @@ let () =
             test_invariants_hold_for_public_operations;
           test_case "invariants_report_malformed_leaf"
             test_invariants_report_malformed_leaf;
+          test_case "invariants_reject_zero_count_vector"
+            test_invariants_reject_zero_count_vector;
           test_case "invariants_reject_root_singleton_branch"
             test_invariants_reject_root_singleton_branch;
           test_case "invariants_reject_child_height_mismatch"

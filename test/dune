@@ -1,4 +1,45 @@
 (test
  (name test_rrbvec)
+ (package rrbvec-native)
  (modules test_rrbvec)
- (libraries rrbvec alcotest qcheck-core qcheck-alcotest))
+ (libraries rrbvec-native alcotest qcheck-core qcheck-alcotest))
+
+(executable
+ (name native_smoke)
+ (modules native_smoke)
+ (libraries rrbvec-native))
+
+(executable
+ (name jsoo_smoke)
+ (modes js)
+ (modules jsoo_smoke)
+ (libraries rrbvec-jsoo))
+
+(melange.emit
+ (target melange-smoke)
+ (alias melange-smoke)
+ (module_systems esm)
+ (modules melange_smoke)
+ (libraries rrbvec-melange))
+
+(rule
+ (package rrbvec-native)
+ (alias runtest)
+ (action
+  (run ./native_smoke.exe)))
+
+(rule
+ (package rrbvec-jsoo)
+ (alias runtest)
+ (deps jsoo_smoke.bc.js)
+ (action
+  (run node %{dep:jsoo_smoke.bc.js})))
+
+(rule
+ (package rrbvec-melange)
+ (alias runtest)
+ (deps
+  (alias melange-smoke)
+  melange-smoke/test/melange_smoke.js)
+ (action
+  (run node %{dep:melange-smoke/test/melange_smoke.js})))

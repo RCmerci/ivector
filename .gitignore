@@ -1,1 +1,3 @@
 /_build/
+/.lsp/
+/.clj-kondo/

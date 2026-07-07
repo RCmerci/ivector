@@ -1,0 +1,6 @@
+(library
+ (name rrbvec_jsoo)
+ (public_name rrbvec-jsoo)
+ (implements rrbvec_core)
+ (modes byte)
+ (libraries js_of_ocaml))

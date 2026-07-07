@@ -1,0 +1,6 @@
+(library
+ (name rrbvec_melange)
+ (public_name rrbvec-melange)
+ (implements rrbvec_core)
+ (modes melange)
+ (libraries melange.js))
