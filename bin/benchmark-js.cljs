@@ -5,6 +5,7 @@
 (def default-updates 5000)
 (def default-iterations 20)
 (def concat-chunks 100)
+(defonce benchmark-sink (volatile! nil))
 
 (defn parse-int-arg [value flag]
   (let [parsed (js/Number value)]
@@ -61,6 +62,9 @@
 
 (defn cljs-sum [values]
   (reduce + 0 values))
+
+(defn cljs-fold-ignore [values]
+  (reduce (fn [_ value] value) 0 values))
 
 (defn cljs-map-values [values]
   (mapv (fn [value] (+ (* value 2) 1)) values))
@@ -119,6 +123,7 @@
    :build-front #(.buildFront api %)
    :length #(.length api %)
    :sum #(.sum api %)
+   :fold-ignore #(.foldIgnore api %)
    :random-read #(.randomRead api %1 %2)
    :random-write #(.randomWrite api %1 %2)
    :map-values #(.mapValues api %)
@@ -136,6 +141,7 @@
    :build-front cljs-build-front
    :length count
    :sum cljs-sum
+   :fold-ignore cljs-fold-ignore
    :random-read (fn [values _count] (cljs-random-read values (:reads indices)))
    :random-write (fn [values _count] (cljs-random-write values (:updates indices)))
    :map-values cljs-map-values
@@ -180,7 +186,7 @@
 (defn benchmark [iterations f]
   (let [start (.now js/performance)]
     (dotimes [_ iterations]
-      (f))
+      (vreset! benchmark-sink (f)))
     (/ (- (.now js/performance) start) iterations)))
 
 (defn cases [backend config values]
@@ -188,18 +194,30 @@
         reads (:reads config)
         updates (:updates config)
         subvec-steps (min 8 (quot (dec size) 2))
-        chunks ((:build-chunks backend) values (min concat-chunks size))]
-    [{:group "Sequential write" :name "push_back" :run #((:build-back backend) size)}
-     {:group "Sequential write" :name "push_front" :run #((:build-front backend) size)}
-     {:group "Sequential read" :name "fold/sum" :run #((:sum backend) values)}
-     {:group "Sequential read" :name "map" :run #((:map-values backend) values)}
-     {:group "Random read" :name "indexed reads" :run #((:random-read backend) values reads)}
-     {:group "Random write" :name "indexed writes" :run #((:random-write backend) values updates)}
-     {:group "Subvec and concat" :name "repeated subvec" :run #((:repeated-subvec backend) values subvec-steps)}
-     {:group "Subvec and concat" :name "concat chunks" :run #((:concat-built-chunks backend) chunks)}
-     {:group "Push/pop" :name "pop_back all" :run #((:pop-back-all backend) values)}
-     {:group "Push/pop" :name "pop_front all" :run #((:pop-front-all backend) values)}
-     {:group "Push/pop" :name "push then pop" :run #((:push-pop backend) size)}]))
+        build-back (:build-back backend)
+        build-front (:build-front backend)
+        fold-ignore (:fold-ignore backend)
+        map-values (:map-values backend)
+        random-read (:random-read backend)
+        random-write (:random-write backend)
+        repeated-subvec (:repeated-subvec backend)
+        build-chunks (:build-chunks backend)
+        concat-built-chunks (:concat-built-chunks backend)
+        pop-back-all (:pop-back-all backend)
+        pop-front-all (:pop-front-all backend)
+        push-pop (:push-pop backend)
+        chunks (build-chunks values (min concat-chunks size))]
+    [{:group "Sequential write" :name "push_back" :run #(build-back size)}
+     {:group "Sequential write" :name "push_front" :run #(build-front size)}
+     {:group "Sequential read" :name "fold/ignore" :run #(fold-ignore values)}
+     {:group "Sequential read" :name "map" :run #(map-values values)}
+     {:group "Random read" :name "indexed reads" :run #(random-read values reads)}
+     {:group "Random write" :name "indexed writes" :run #(random-write values updates)}
+     {:group "Subvec and concat" :name "repeated subvec" :run #(repeated-subvec values subvec-steps)}
+     {:group "Subvec and concat" :name "concat chunks" :run #(concat-built-chunks chunks)}
+     {:group "Push/pop" :name "pop_back all" :run #(pop-back-all values)}
+     {:group "Push/pop" :name "pop_front all" :run #(pop-front-all values)}
+     {:group "Push/pop" :name "push then pop" :run #(push-pop size)}]))
 
 (defn print-results [results]
   (doseq [[group rows] (group-by :group results)]

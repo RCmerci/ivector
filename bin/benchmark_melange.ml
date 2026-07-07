@@ -17,6 +17,8 @@ let build_front size =
 
 let sum values = Rrbvec.fold_left ( + ) 0 values
 
+let fold_ignore values = Rrbvec.fold_left (fun _ value -> value) 0 values
+
 let random_read values count =
   let indices = make_indices count (Rrbvec.length values) in
   Array.fold_left (fun acc index -> acc + Rrbvec.get values index) 0 indices
@@ -98,6 +100,7 @@ let () =
   set_api "buildFront" build_front api;
   set_api "length" Rrbvec.length api;
   set_api "sum" sum api;
+  set_api "foldIgnore" fold_ignore api;
   set_api "randomRead" random_read api;
   set_api "randomWrite" random_write api;
   set_api "mapValues" map_values api;
