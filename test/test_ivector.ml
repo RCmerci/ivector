@@ -100,7 +100,7 @@ let test_invariants_hold_for_public_operations () =
   check_invariants "push" pushed;
   check_invariants "set trie" (set pushed 100 42);
   check_invariants "set tail" (set pushed 1099 42);
-  check_invariants "set append" (set pushed 1100 42);
+  check_raises_invalid_arg "set at count" (fun () -> ignore (set pushed 1100 42));
   check_invariants "pop" (pop pushed);
   check_invariants "subvec" (subvec pushed 17 1090);
   let combined =
@@ -200,10 +200,9 @@ let test_set_updates_tail_and_trie_without_mutating_old_vector () =
   check_int "intermediate tail value preserved" 1049 (get v1 1049);
   check_int "length after set" 1050 (length v2)
 
-let test_set_at_count_appends_like_clojure_assocn () =
+let test_set_at_count_raises_invalid_arg () =
   let v = of_list [ 1; 2; 3 ] in
-  let appended = set v 3 4 in
-  check_list "set at count appends" [ 1; 2; 3; 4 ] (to_list appended);
+  check_raises_invalid_arg "set at count" (fun () -> ignore (set v 3 4));
   check_list "set at count keeps old vector" [ 1; 2; 3 ] (to_list v)
 
 let test_pop_and_peek_across_boundaries () =
@@ -536,8 +535,8 @@ let () =
             test_persistent_push_keeps_old_vector;
           test_case "set_updates_tail_and_trie_without_mutating_old_vector"
             test_set_updates_tail_and_trie_without_mutating_old_vector;
-          test_case "set_at_count_appends_like_clojure_assocn"
-            test_set_at_count_appends_like_clojure_assocn;
+          test_case "set_at_count_raises_invalid_arg"
+            test_set_at_count_raises_invalid_arg;
           test_case "pop_and_peek_across_boundaries"
             test_pop_and_peek_across_boundaries;
           test_case "invalid_indices" test_invalid_indices;

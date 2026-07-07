@@ -438,9 +438,8 @@ and rebuild_append left right =
   build 0 (Array.length leaves)
 
 let rec set v index value =
-  if index < 0 || index > v.count then invalid_index ();
+  if index < 0 || index >= v.count then invalid_index ();
   if v.shift = append_shift then set (materialize v) index value
-  else if index = v.count then push v value
   else if index >= v.tailoff then (
     let tail = Array.copy v.tail in
     Array.unsafe_set tail (index land mask) value;

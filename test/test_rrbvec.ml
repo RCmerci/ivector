@@ -131,6 +131,8 @@ let unsafe_vector raw = (Obj.magic raw : int t)
 
 let raw_leaf length = Raw_leaf (Array.init length Fun.id)
 
+let raw_leaf_range start length = Raw_leaf (Array.init length (fun i -> start + i))
+
 let raw_branch children =
   let sizes = Array.make (Array.length children) 0 in
   let count = ref 0 in
@@ -200,7 +202,7 @@ let test_invariants_hold_for_public_operations () =
   in
   check_invariants "push" pushed;
   check_invariants "set trie" (set pushed 100 42);
-  check_invariants "set append" (set pushed 1100 42);
+  check_raises_invalid_arg "set at count" (fun () -> ignore (set pushed 1100 42));
   check_invariants "pop" (snd (pop_back pushed));
   check_invariants "subvec" (subvec pushed 17 1090);
   let combined =
@@ -331,15 +333,15 @@ let test_set_pop_and_peek () =
   let v0 = of_list (range 1050) in
   let v1 = set v0 10 10010 in
   let v2 = set v1 1049 11049 in
-  let v3 = set v2 1050 21050 in
-  check_invariants "set append" v3;
   check_int "old value preserved" 10 (get v0 10);
-  check_int "updated trie value" 10010 (get v3 10);
-  check_int "updated last value" 11049 (get v3 1049);
-  check_int "set at count appends" 21050 (peek_back v3);
-  check_list "pop removes last" (to_list v2) (to_list (snd (pop_back v3)));
+  check_int "updated trie value" 10010 (get v2 10);
+  check_int "updated last value" 11049 (get v2 1049);
+  check_raises_invalid_arg "set at count" (fun () -> ignore (set v2 1050 21050));
+  check_list "pop removes last"
+    (list_slice (to_list v2) 0 (length v2 - 1))
+    (to_list (snd (pop_back v2)));
   check_raises_invalid_arg "negative set" (fun () -> ignore (set v0 (-1) 1));
-  check_raises_invalid_arg "past append set" (fun () -> ignore (set v0 1051 1))
+  check_raises_invalid_arg "past end set" (fun () -> ignore (set v0 1051 1))
 
 let test_front_and_back_operations () =
   let v0 = of_list [ 2; 3 ] in
@@ -445,7 +447,7 @@ let normalize_existing_index values raw_index =
   non_negative_mod raw_index (List.length values)
 
 let normalize_set_index values raw_index =
-  non_negative_mod raw_index (List.length values + 1)
+  normalize_existing_index values raw_index
 
 let normalize_subvec_bounds values raw_start raw_length =
   let length = List.length values in
@@ -498,12 +500,14 @@ let apply_operation step values expected operation =
                 expected_value value;
             (values, rest))
     | Set (raw_index, value) ->
-        let index = normalize_set_index expected raw_index in
-        let expected =
-          if index = List.length expected then expected @ [ value ]
-          else list_set expected index value
-        in
-        (set values index value, expected)
+        if expected = [] then (
+          check_raises_invalid_arg "property set empty" (fun () ->
+              ignore (set values 0 value));
+          (values, expected))
+        else
+          let index = normalize_set_index expected raw_index in
+          let expected = list_set expected index value in
+          (set values index value, expected)
     | Get raw_index ->
         (if expected = [] then
           check_raises_invalid_arg "property get empty" (fun () ->
@@ -627,8 +631,10 @@ let test_write_operations_keep_all_historical_versions_persistent () =
   let tail_index = length v4 - 1 in
   let expected5 = list_set expected4 tail_index 9999 in
   let v5 = remember "after set tail" (set v4 tail_index 9999) expected5 in
+  check_raises_invalid_arg "set at count in scenario" (fun () ->
+      ignore (set v5 (length v5) 10000));
   let expected6 = expected5 @ [ 10000 ] in
-  let v6 = remember "after set append" (set v5 (length v5) 10000) expected6 in
+  let v6 = remember "after push_back" (push_back v5 10000) expected6 in
   let expected7 = expected6 @ [ 10001; 10002; 10003 ] in
   let v7 =
     remember "after append_list"
@@ -833,6 +839,44 @@ let test_repeated_chunk_concat_satisfies_relaxed_density () =
   check_int "repeated chunk concat last" (size - 1) (peek_back combined);
   check_int "repeated chunk concat sum" ((size * (size - 1)) / 2)
     (fold_left ( + ) 0 combined)
+
+let test_concat_sparse_middle_rebalance_allocation_skips_full_edges () =
+  let full_leaf_count = 8 in
+  let sparse_leaf_count = 2 in
+  let next_value = ref 0 in
+  let leaf length =
+    let start = !next_value in
+    next_value := start + length;
+    raw_leaf_range start length
+  in
+  let left =
+    raw_vector
+      (raw_branch
+         (Array.init
+            (full_leaf_count + sparse_leaf_count)
+            (fun index ->
+              if index < full_leaf_count then leaf rrb_width else leaf 1)))
+  in
+  let right =
+    raw_vector
+      (raw_branch
+         (Array.init
+            (sparse_leaf_count + full_leaf_count)
+            (fun index ->
+              if index < sparse_leaf_count then leaf 1 else leaf rrb_width)))
+  in
+  check_invariants "sparse middle concat left setup" left;
+  check_invariants "sparse middle concat right setup" right;
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let combined = concat left right in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "sparse middle concat allocation" combined;
+  check_int "sparse middle concat allocation length" !next_value
+    (length combined);
+  check_list "sparse middle concat allocation order" (range !next_value)
+    (to_list combined);
+  check_allocated_less_than "sparse middle concat allocation" 8_000. allocated
 
 let test_push_large_allocation_is_linear () =
   let size = 20_000 in
@@ -1097,6 +1141,9 @@ let () =
             test_repeated_concat_stays_stack_safe;
           test_case "repeated_chunk_concat_satisfies_relaxed_density"
             test_repeated_chunk_concat_satisfies_relaxed_density;
+          test_case
+            "concat_sparse_middle_rebalance_allocation_skips_full_edges"
+            test_concat_sparse_middle_rebalance_allocation_skips_full_edges;
           test_case "push_large_allocation_is_linear"
             test_push_large_allocation_is_linear;
           test_case "push_back_same_height_fast_path_allocation"

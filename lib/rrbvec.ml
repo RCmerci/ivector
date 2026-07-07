@@ -272,62 +272,147 @@ let make_vector root =
       in
       make_with_edges head root tail
 
+let full_rebalance_window length is_full =
+  let left_keep = ref 0 in
+  while !left_keep < length && is_full !left_keep do
+    incr left_keep
+  done;
+  let right_keep = ref length in
+  while !right_keep > !left_keep && is_full (!right_keep - 1) do
+    decr right_keep
+  done;
+  (!left_keep, !right_keep)
+
+let count_window_units unit_count left_keep right_keep =
+  let units = ref 0 in
+  for i = left_keep to right_keep - 1 do
+    units := !units + unit_count i
+  done;
+  !units
+
+let make_rebalance_result children left_keep right_keep window_groups =
+  let length = Array.length children in
+  let suffix_length = length - right_keep in
+  let result_length = left_keep + window_groups + suffix_length in
+  let result = Array.make result_length (Array.unsafe_get children 0) in
+  Array.blit children 0 result 0 left_keep;
+  Array.blit children right_keep result (left_keep + window_groups) suffix_length;
+  result
+
 let rebalance_branch_children children =
   let children = normalize_child_heights children in
   if Array.length children <= 1 then children
   else
     match Array.unsafe_get children 0 with
     | Leaf _ ->
+        let length = Array.length children in
         let total_values = ref 0 in
         let can_rebalance = ref true in
-        for i = 0 to Array.length children - 1 do
+        for i = 0 to length - 1 do
           match Array.unsafe_get children i with
           | Leaf values -> total_values := !total_values + Array.length values
           | Empty | Branch _ -> can_rebalance := false
         done;
         let opt = ceil_div !total_values width in
-        if (not !can_rebalance) || Array.length children <= opt + 2 then children
+        if (not !can_rebalance) || length <= opt + 2 then children
         else
-          let values =
-            Array.concat
-              (Array.to_list
-                 (Array.map
-                    (function
-                      | Leaf values -> values
-                      | Empty | Branch _ -> assert false)
-                    children))
+          let leaf_length index =
+            match Array.unsafe_get children index with
+            | Leaf values -> Array.length values
+            | Empty | Branch _ -> assert false
           in
-          Array.init opt (fun group_index ->
-              let start = group_index * width in
-              let stop = min (Array.length values) (start + width) in
-              Leaf (Array.sub values start (stop - start)))
+          let left_keep, right_keep =
+            full_rebalance_window length (fun index ->
+                leaf_length index = width)
+          in
+          let window_values =
+            count_window_units leaf_length left_keep right_keep
+          in
+          let window_groups = ceil_div window_values width in
+          let result =
+            make_rebalance_result children left_keep right_keep window_groups
+          in
+          let source_index = ref left_keep in
+          let source_offset = ref 0 in
+          let next_value () =
+            match Array.unsafe_get children !source_index with
+            | Leaf values ->
+                let value = Array.unsafe_get values !source_offset in
+                incr source_offset;
+                if !source_offset = Array.length values then (
+                  incr source_index;
+                  source_offset := 0);
+                value
+            | Empty | Branch _ -> assert false
+          in
+          let remaining = ref window_values in
+          for group_index = 0 to window_groups - 1 do
+            let group_length = min width !remaining in
+            let first = next_value () in
+            let values = Array.make group_length first in
+            for value_index = 1 to group_length - 1 do
+              Array.unsafe_set values value_index (next_value ())
+            done;
+            remaining := !remaining - group_length;
+            Array.unsafe_set result (left_keep + group_index) (Leaf values)
+          done;
+          result
     | Branch first_branch ->
+        let length = Array.length children in
         let height = first_branch.height in
         let total_child_slots = ref 0 in
         let can_rebalance = ref true in
-        for i = 0 to Array.length children - 1 do
+        for i = 0 to length - 1 do
           match Array.unsafe_get children i with
           | Branch branch when branch.height = height ->
               total_child_slots := !total_child_slots + Array.length branch.children
           | Empty | Leaf _ | Branch _ -> can_rebalance := false
         done;
         let opt = ceil_div !total_child_slots width in
-        if (not !can_rebalance) || Array.length children <= opt + 2 then children
+        if (not !can_rebalance) || length <= opt + 2 then children
         else
-          let slots =
-            Array.concat
-              (Array.to_list
-                 (Array.map
-                    (function
-                      | Branch branch -> branch.children
-                      | Empty | Leaf _ -> assert false)
-                    children))
+          let branch_child_slots index =
+            match Array.unsafe_get children index with
+            | Branch branch -> Array.length branch.children
+            | Empty | Leaf _ -> assert false
           in
-          let group_count = ceil_div (Array.length slots) width in
-          Array.init group_count (fun group_index ->
-              let start = group_index * width in
-              let stop = min (Array.length slots) (start + width) in
-              make_branch_node (Array.sub slots start (stop - start)))
+          let left_keep, right_keep =
+            full_rebalance_window length (fun index ->
+                branch_child_slots index = width)
+          in
+          let window_slots =
+            count_window_units branch_child_slots left_keep right_keep
+          in
+          let window_groups = ceil_div window_slots width in
+          let result =
+            make_rebalance_result children left_keep right_keep window_groups
+          in
+          let source_index = ref left_keep in
+          let source_offset = ref 0 in
+          let next_child () =
+            match Array.unsafe_get children !source_index with
+            | Branch branch ->
+                let child = Array.unsafe_get branch.children !source_offset in
+                incr source_offset;
+                if !source_offset = Array.length branch.children then (
+                  incr source_index;
+                  source_offset := 0);
+                child
+            | Empty | Leaf _ -> assert false
+          in
+          let remaining = ref window_slots in
+          for group_index = 0 to window_groups - 1 do
+            let group_length = min width !remaining in
+            let first = next_child () in
+            let group_children = Array.make group_length first in
+            for child_index = 1 to group_length - 1 do
+              Array.unsafe_set group_children child_index (next_child ())
+            done;
+            remaining := !remaining - group_length;
+            Array.unsafe_set result (left_keep + group_index)
+              (make_branch_node group_children)
+          done;
+          result
     | Empty -> children
 
 let make_concat_branch children = make_branch (rebalance_branch_children children)
@@ -665,19 +750,17 @@ let push_back_impl v value =
     }
 
 let set v index value =
-  if index < 0 || index > v.count then invalid_index ();
-  if index = v.count then push_back_impl v value
-  else
-    let head_length = Array.length v.head in
-    if index < head_length then (
-      let head = Array.copy v.head in
-      Array.unsafe_set head index value;
-      { v with head })
-    else if index >= v.tailoff then (
-      let tail = Array.copy v.tail in
-      Array.unsafe_set tail (index - v.tailoff) value;
-      { v with tail })
-    else make_with_edges v.head (set_node v.root (index - head_length) value) v.tail
+  if index < 0 || index >= v.count then invalid_index ();
+  let head_length = Array.length v.head in
+  if index < head_length then (
+    let head = Array.copy v.head in
+    Array.unsafe_set head index value;
+    { v with head })
+  else if index >= v.tailoff then (
+    let tail = Array.copy v.tail in
+    Array.unsafe_set tail (index - v.tailoff) value;
+    { v with tail })
+  else make_with_edges v.head (set_node v.root (index - head_length) value) v.tail
 
 let peek_back_impl v =
   if v.count = 0 then invalid_index ();
