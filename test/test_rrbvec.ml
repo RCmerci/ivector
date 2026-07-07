@@ -1068,6 +1068,33 @@ let test_fold_right_large_allocation_is_linear () =
   check_int "large fold_right sum" ((size * (size - 1)) / 2) sum;
   check_allocated_less_than "large fold_right allocation" 5_000_000. allocated
 
+let test_map_large_allocation_is_leaf_linear () =
+  let size = 100_000 in
+  let v = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let mapped = map (fun value -> (value * 2) + 1) v in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "large map allocation" mapped;
+  check_int "large map length" size (length mapped);
+  check_int "large map sum" ((2 * (size * (size - 1) / 2)) + size)
+    (fold_left ( + ) 0 mapped);
+  check_allocated_less_than "large map allocation" 5_000_000. allocated
+
+let test_map_visits_values_in_order () =
+  let v = push_front (of_list (range 100)) (-1) in
+  let visited = ref [] in
+  let mapped =
+    map
+      (fun value ->
+        visited := value :: !visited;
+        value + 1)
+      v
+  in
+  check_list "map visit order" (to_list v) (List.rev !visited);
+  check_list "map result order" (List.map (( + ) 1) (to_list v))
+    (to_list mapped)
+
 let test_conversions_and_map () =
   let values = [| 1; 2; 3 |] in
   let v = of_array values in
@@ -1170,5 +1197,9 @@ let () =
             test_fold_right_visits_values_in_order;
           test_case "fold_right_large_allocation_is_linear"
             test_fold_right_large_allocation_is_linear;
+          test_case "map_large_allocation_is_leaf_linear"
+            test_map_large_allocation_is_leaf_linear;
+          test_case "map_visits_values_in_order"
+            test_map_visits_values_in_order;
         ] );
     ]

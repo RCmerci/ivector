@@ -1080,7 +1080,26 @@ let pop_front v =
     let tail = Array.sub v.tail 1 (Array.length v.tail - 1) in
     (value, { v with count = v.count - 1; tail; tailoff = 0 })
 
-let map f v = fold_left (fun acc value -> push_back_impl acc (f value)) empty v
+let rec map_node f = function
+  | Empty -> Empty
+  | Leaf values -> Leaf (Array.map f values)
+  | Branch branch ->
+      let children = Array.map (map_node f) branch.children in
+      Branch { branch with children }
+
+let map f v =
+  if v.count = 0 then empty
+  else
+    let head = Array.map f v.head in
+    let root = map_node f v.root in
+    let tail = Array.map f v.tail in
+    {
+      count = v.count;
+      root;
+      tail;
+      tailoff = v.tailoff;
+      head;
+    }
 
 let append_array v values =
   if Array.length values = 0 then v else concat v (of_array values)

@@ -74,6 +74,9 @@ let range_sum start length = (start + start + length - 1) * length / 2
 
 let sum_rrbvec values = Rrbvec.fold_left ( + ) 0 values
 let sum_batvect values = BatVect.fold_left ( + ) 0 values
+let map_value value = (value * 2) + 1
+let map_rrbvec values = Rrbvec.map map_value values
+let map_batvect values = BatVect.map map_value values
 
 let check_rrbvec_invariants name values =
   try Rrbvec.invariants values
@@ -249,6 +252,16 @@ let verify_random_write config values indices =
   check "Rrbvec random write (set)" expected (sum_rrbvec rrbvec_updated);
   check "BatVect random write (set)" expected (sum_batvect batvect_updated)
 
+let verify_map config values =
+  let expected_sum = (2 * range_sum 0 config.size) + config.size in
+  let rrbvec_mapped = map_rrbvec values.rrbvec in
+  let batvect_mapped = map_batvect values.batvect in
+  check_rrbvec_invariants "Rrbvec map" rrbvec_mapped;
+  check "Rrbvec map length" config.size (Rrbvec.length rrbvec_mapped);
+  check "BatVect map length" config.size (BatVect.length batvect_mapped);
+  check "Rrbvec map sum" expected_sum (sum_rrbvec rrbvec_mapped);
+  check "BatVect map sum" expected_sum (sum_batvect batvect_mapped)
+
 let verify_subvec_concat config values =
   let subvec_steps = min 8 ((config.size - 1) / 2) in
   let final_length = config.size - (2 * subvec_steps) in
@@ -310,8 +323,10 @@ let benchmark_groups config values =
         [
           { name = "Rrbvec sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_rrbvec values.rrbvec))) };
           { name = "Rrbvec sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.fold_right ( + ) values.rrbvec 0))) };
+          { name = "Rrbvec map"; run = (fun () -> ignore (Sys.opaque_identity (map_rrbvec values.rrbvec))) };
           { name = "BatVect sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_batvect values.batvect))) };
           { name = "BatVect sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.fold_right ( + ) values.batvect 0))) };
+          { name = "BatVect map"; run = (fun () -> ignore (Sys.opaque_identity (map_batvect values.batvect))) };
         ];
     };
     {
@@ -445,6 +460,7 @@ let verify config values =
   check "Rrbvec random read" expected_reads (rrbvec_random_sum values.rrbvec read_indices);
   check "BatVect random read" expected_reads (batvect_random_sum values.batvect read_indices);
   verify_random_write config values (make_indices config.updates config.size);
+  verify_map config values;
   verify_subvec_concat config values;
   verify_push_pop config
 
