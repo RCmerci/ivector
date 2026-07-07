@@ -194,6 +194,27 @@ let rec last_leaf_node = function
       last_leaf_node
         (Array.unsafe_get branch.children (Array.length branch.children - 1))
 
+let rec take_last_leaf_node = function
+  | Empty -> invalid_index ()
+  | Leaf values -> (values, None)
+  | Branch branch ->
+      let child_index = Array.length branch.children - 1 in
+      let leaf, child =
+        take_last_leaf_node (Array.unsafe_get branch.children child_index)
+      in
+      let children =
+        match child with
+        | None -> Array.sub branch.children 0 child_index
+        | Some child ->
+            let children = Array.copy branch.children in
+            Array.unsafe_set children child_index child;
+            children
+      in
+      let root =
+        if Array.length children = 0 then None else Some (make_branch children)
+      in
+      (leaf, root)
+
 let rec first_leaf_node = function
   | Empty -> invalid_index ()
   | Leaf values -> values
@@ -256,6 +277,30 @@ let rebalance_branch_children children =
   if Array.length children <= 1 then children
   else
     match Array.unsafe_get children 0 with
+    | Leaf _ ->
+        let total_values = ref 0 in
+        let can_rebalance = ref true in
+        for i = 0 to Array.length children - 1 do
+          match Array.unsafe_get children i with
+          | Leaf values -> total_values := !total_values + Array.length values
+          | Empty | Branch _ -> can_rebalance := false
+        done;
+        let opt = ceil_div !total_values width in
+        if (not !can_rebalance) || Array.length children <= opt + 2 then children
+        else
+          let values =
+            Array.concat
+              (Array.to_list
+                 (Array.map
+                    (function
+                      | Leaf values -> values
+                      | Empty | Branch _ -> assert false)
+                    children))
+          in
+          Array.init opt (fun group_index ->
+              let start = group_index * width in
+              let stop = min (Array.length values) (start + width) in
+              Leaf (Array.sub values start (stop - start)))
     | Branch first_branch ->
         let height = first_branch.height in
         let total_child_slots = ref 0 in
@@ -283,7 +328,7 @@ let rebalance_branch_children children =
               let start = group_index * width in
               let stop = min (Array.length slots) (start + width) in
               make_branch_node (Array.sub slots start (stop - start)))
-    | Empty | Leaf _ -> children
+    | Empty -> children
 
 let make_concat_branch children = make_branch (rebalance_branch_children children)
 
@@ -643,37 +688,13 @@ let peek_back_impl v =
     let head_length = Array.length v.head in
     Array.unsafe_get v.head (head_length - 1)
 
-let pop_back_impl v =
-  if v.count = 0 then invalid_index ();
-  let tail_length = Array.length v.tail in
-  if tail_length > 1 then
-    {
-      v with
-      count = v.count - 1;
-      tail = Array.sub v.tail 0 (tail_length - 1);
-    }
-  else if tail_length = 1 then { v with count = v.count - 1; tail = [||] }
-  else if v.root = Empty then
-    let head_length = Array.length v.head in
-    if head_length = 1 then { v with count = v.count - 1; head = [||] }
-    else
-      {
-        v with
-        count = v.count - 1;
-        head = Array.sub v.head 0 (head_length - 1);
-        tailoff = v.tailoff - 1;
-      }
-  else
-    let leaf = last_leaf_node v.root in
-    let root = remove_last_leaf_node v.root |> Option.value ~default:Empty in
-    let tail = Array.sub leaf 0 (Array.length leaf - 1) in
-    {
-      count = v.count - 1;
-      root;
-      tail;
-      tailoff = Array.length v.head + node_count root;
-      head = v.head;
-    }
+let pull_tail_from_root root =
+  let tail, root = take_last_leaf_node root in
+  (Option.value root ~default:Empty, tail)
+
+let refill_tail_if_empty root tail =
+  if Array.length tail > 0 || root = Empty then (root, tail)
+  else pull_tail_from_root root
 
 let fold_array_range f acc values start stop =
   let acc = ref acc in
@@ -759,7 +780,55 @@ let push_front v value =
 
 let pop_back v =
   if v.count = 0 then invalid_index ();
-  (peek_back_impl v, pop_back_impl v)
+  let tail_length = Array.length v.tail in
+  if tail_length > 0 then
+    let value = Array.unsafe_get v.tail (tail_length - 1) in
+    if tail_length > 1 then
+      ( value,
+        {
+          v with
+          count = v.count - 1;
+          tail = Array.sub v.tail 0 (tail_length - 1);
+        } )
+    else if v.root = Empty then
+      (value, { v with count = v.count - 1; tail = [||] })
+    else
+      let root, tail = pull_tail_from_root v.root in
+      ( value,
+        {
+          count = v.count - 1;
+          root;
+          tail;
+          tailoff = Array.length v.head + node_count root;
+          head = v.head;
+        } )
+  else if v.root = Empty then
+    let head_length = Array.length v.head in
+    let value = Array.unsafe_get v.head (head_length - 1) in
+    if head_length = 1 then (value, empty)
+    else
+      ( value,
+        {
+          v with
+          count = v.count - 1;
+          head = Array.sub v.head 0 (head_length - 1);
+          tailoff = v.tailoff - 1;
+        } )
+  else
+    let leaf, root = take_last_leaf_node v.root in
+    let leaf_length = Array.length leaf in
+    let value = Array.unsafe_get leaf (leaf_length - 1) in
+    let root = Option.value root ~default:Empty in
+    let tail = Array.sub leaf 0 (leaf_length - 1) in
+    let root, tail = refill_tail_if_empty root tail in
+    ( value,
+      {
+        count = v.count - 1;
+        root;
+        tail;
+        tailoff = Array.length v.head + node_count root;
+        head = v.head;
+      } )
 
 let peek_back = peek_back_impl
 

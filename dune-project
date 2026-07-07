@@ -23,7 +23,9 @@
   ocaml
   (alcotest :with-test)
   (batteries :with-test)
-  (bechamel :with-test))
+  (bechamel :with-test)
+  (qcheck :with-test)
+  (qcheck-alcotest :with-test))
  (tags
   ("add topics" "to describe" your project)))
 

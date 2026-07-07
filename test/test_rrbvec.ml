@@ -15,6 +15,8 @@ let check_string_list name expected actual =
 let check_array name expected actual =
   Alcotest.(check (array int)) name expected actual
 
+let failf fmt = Printf.ksprintf (fun message -> Alcotest.fail message) fmt
+
 let check_allocated_less_than name limit actual =
   if not (actual < limit) then
     Alcotest.failf "%s: expected < %.0f bytes, got %.0f bytes" name limit
@@ -364,6 +366,20 @@ let test_front_and_back_operations () =
   check_raises_invalid_arg "peek_front empty" (fun () -> ignore (peek_front empty));
   check_raises_invalid_arg "peek_back empty" (fun () -> ignore (peek_back empty))
 
+let test_pop_back_head_only_vector () =
+  let values = push_front empty 42 in
+  check_invariants "head only setup" values;
+  check_int "head only setup head length" 1 (header_head_length values);
+  check_int "head only setup tail length" 0 (header_tail_length values);
+  let value, popped = pop_back values in
+  check_int "head only pop_back value" 42 value;
+  check_invariants "head only pop_back" popped;
+  check "head only pop_back empty" (is_empty popped);
+  check_list "head only pop_back order" [] (to_list popped);
+  let pushed = push_back popped 7 in
+  check_invariants "push after head only pop_back" pushed;
+  check_list "push after head only pop_back order" [ 7 ] (to_list pushed)
+
 let list_set values index value =
   List.mapi (fun i current -> if i = index then value else current) values
 
@@ -371,6 +387,213 @@ let list_drop_last values =
   match List.rev values with
   | [] -> invalid_arg "empty list"
   | _ :: rest -> List.rev rest
+
+type operation =
+  | Push_back of int
+  | Push_front of int
+  | Pop_back
+  | Pop_front
+  | Set of int * int
+  | Get of int
+  | Peek_back
+  | Peek_front
+  | Subvec of int * int
+  | Concat_right of int list
+  | Concat_left of int list
+  | Append_list of int list
+  | Append_array of int list
+  | Prepend_list of int list
+  | Prepend_array of int list
+
+let string_of_int_list values =
+  "[" ^ String.concat "; " (List.map string_of_int values) ^ "]"
+
+let string_of_operation = function
+  | Push_back value -> Printf.sprintf "Push_back %d" value
+  | Push_front value -> Printf.sprintf "Push_front %d" value
+  | Pop_back -> "Pop_back"
+  | Pop_front -> "Pop_front"
+  | Set (index, value) -> Printf.sprintf "Set (%d, %d)" index value
+  | Get index -> Printf.sprintf "Get %d" index
+  | Peek_back -> "Peek_back"
+  | Peek_front -> "Peek_front"
+  | Subvec (start, length) -> Printf.sprintf "Subvec (%d, %d)" start length
+  | Concat_right values ->
+      Printf.sprintf "Concat_right %s" (string_of_int_list values)
+  | Concat_left values ->
+      Printf.sprintf "Concat_left %s" (string_of_int_list values)
+  | Append_list values ->
+      Printf.sprintf "Append_list %s" (string_of_int_list values)
+  | Append_array values ->
+      Printf.sprintf "Append_array %s" (string_of_int_list values)
+  | Prepend_list values ->
+      Printf.sprintf "Prepend_list %s" (string_of_int_list values)
+  | Prepend_array values ->
+      Printf.sprintf "Prepend_array %s" (string_of_int_list values)
+
+let string_of_operations operations =
+  operations
+  |> List.mapi (fun index operation ->
+         Printf.sprintf "%d: %s" index (string_of_operation operation))
+  |> String.concat "\n"
+
+let non_negative_mod value bound =
+  let remainder = value mod bound in
+  if remainder < 0 then remainder + bound else remainder
+
+let normalize_existing_index values raw_index =
+  non_negative_mod raw_index (List.length values)
+
+let normalize_set_index values raw_index =
+  non_negative_mod raw_index (List.length values + 1)
+
+let normalize_subvec_bounds values raw_start raw_length =
+  let length = List.length values in
+  if length = 0 then (0, 0)
+  else
+    let start = non_negative_mod raw_start (length + 1) in
+    let stop = start + non_negative_mod raw_length (length - start + 1) in
+    (start, stop)
+
+let check_property_state step operation values expected =
+  let label =
+    Printf.sprintf "property step %d after %s" step
+      (string_of_operation operation)
+  in
+  check_invariants label values;
+  let actual = to_list values in
+  if actual <> expected then
+    failf "%s: expected %s, got %s" label
+      (string_of_int_list expected)
+      (string_of_int_list actual)
+
+let apply_operation step values expected operation =
+  let values, expected =
+    match operation with
+    | Push_back value -> (push_back values value, expected @ [ value ])
+    | Push_front value -> (push_front values value, value :: expected)
+    | Pop_back -> (
+        match expected with
+        | [] ->
+            check_raises_invalid_arg "property pop_back empty" (fun () ->
+                ignore (pop_back values));
+            (values, expected)
+        | _ ->
+            let expected_value = List.hd (List.rev expected) in
+            let value, values = pop_back values in
+            if value <> expected_value then
+              failf "property step %d pop_back: expected %d, got %d" step
+                expected_value value;
+            (values, list_drop_last expected))
+    | Pop_front -> (
+        match expected with
+        | [] ->
+            check_raises_invalid_arg "property pop_front empty" (fun () ->
+                ignore (pop_front values));
+            (values, expected)
+        | expected_value :: rest ->
+            let value, values = pop_front values in
+            if value <> expected_value then
+              failf "property step %d pop_front: expected %d, got %d" step
+                expected_value value;
+            (values, rest))
+    | Set (raw_index, value) ->
+        let index = normalize_set_index expected raw_index in
+        let expected =
+          if index = List.length expected then expected @ [ value ]
+          else list_set expected index value
+        in
+        (set values index value, expected)
+    | Get raw_index ->
+        (if expected = [] then
+          check_raises_invalid_arg "property get empty" (fun () ->
+              ignore (get values 0))
+         else
+          let index = normalize_existing_index expected raw_index in
+          let expected_value = List.nth expected index in
+          let value = get values index in
+          if value <> expected_value then
+            failf "property step %d get %d: expected %d, got %d" step index
+              expected_value value);
+        (values, expected)
+    | Peek_back -> (
+        match expected with
+        | [] ->
+            check_raises_invalid_arg "property peek_back empty" (fun () ->
+                ignore (peek_back values))
+        | _ ->
+            let expected_value = List.hd (List.rev expected) in
+            let value = peek_back values in
+            if value <> expected_value then
+              failf "property step %d peek_back: expected %d, got %d" step
+                expected_value value);
+        (values, expected)
+    | Peek_front -> (
+        match expected with
+        | [] ->
+            check_raises_invalid_arg "property peek_front empty" (fun () ->
+                ignore (peek_front values))
+        | expected_value :: _ ->
+            let value = peek_front values in
+            if value <> expected_value then
+              failf "property step %d peek_front: expected %d, got %d" step
+                expected_value value);
+        (values, expected)
+    | Subvec (raw_start, raw_length) ->
+        let start, stop = normalize_subvec_bounds expected raw_start raw_length in
+        (subvec values start stop, list_slice expected start stop)
+    | Concat_right right ->
+        (concat values (of_list right), expected @ right)
+    | Concat_left left ->
+        (concat (of_list left) values, left @ expected)
+    | Append_list right ->
+        (append_list values right, expected @ right)
+    | Append_array right ->
+        (append_array values (Array.of_list right), expected @ right)
+    | Prepend_list left ->
+        (prepend_list values left, left @ expected)
+    | Prepend_array left ->
+        (prepend_arrat values (Array.of_list left), left @ expected)
+  in
+  check_property_state step operation values expected;
+  (values, expected)
+
+let operation_gen =
+  let open QCheck2.Gen in
+  let value = int_range (-10_000) 10_000 in
+  let values = list_size (int_bound 8) value in
+  oneof_weighted
+    [
+      (8, map (fun value -> Push_back value) value);
+      (8, map (fun value -> Push_front value) value);
+      (5, return Pop_back);
+      (5, return Pop_front);
+      (5, map2 (fun index value -> Set (index, value)) int value);
+      (3, map (fun index -> Get index) int);
+      (2, return Peek_back);
+      (2, return Peek_front);
+      (4, map2 (fun start length -> Subvec (start, length)) int int);
+      (4, map (fun values -> Concat_right values) values);
+      (4, map (fun values -> Concat_left values) values);
+      (3, map (fun values -> Append_list values) values);
+      (3, map (fun values -> Append_array values) values);
+      (3, map (fun values -> Prepend_list values) values);
+      (3, map (fun values -> Prepend_array values) values);
+    ]
+
+let property_public_operations_preserve_invariants =
+  QCheck2.Test.make ~name:"public operations preserve invariants" ~count:1_000
+    ~print:string_of_operations
+    QCheck2.Gen.(list_size (int_range 0 400) operation_gen)
+    (fun operations ->
+      check_invariants "property initial state" empty;
+      ignore
+        (List.fold_left
+           (fun (step, values, expected) operation ->
+             let values, expected = apply_operation step values expected operation in
+             (step + 1, values, expected))
+           (0, empty, []) operations);
+      true)
 
 let test_write_operations_keep_all_historical_versions_persistent () =
   let snapshots = ref [] in
@@ -734,6 +957,21 @@ let test_subvec_keeps_right_edge_in_tail () =
   check_list "exact leaf multiple subvec order" (range (2 * rrb_width))
     (to_list exact)
 
+let test_pop_back_refills_tail_from_root () =
+  let values = push_back (of_array (Array.init (3 * rrb_width) Fun.id)) 96 in
+  check_invariants "pop back refill setup" values;
+  check_int "setup tail length" 1 (header_tail_length values);
+  let value, popped = pop_back values in
+  check_int "pop back refill value" 96 value;
+  check_invariants "pop back refill" popped;
+  check_int "pop back refill length" (3 * rrb_width) (length popped);
+  check_int "pop back refill tail length" rrb_width
+    (header_tail_length popped);
+  check_int "pop back refill tailoff" (2 * rrb_width)
+    (header_tailoff popped);
+  check_list "pop back refill order" (range (3 * rrb_width))
+    (to_list popped)
+
 let test_push_front_large_allocation_is_linear () =
   let size = 20_000 in
   Gc.compact ();
@@ -829,8 +1067,15 @@ let () =
           test_case "push_get_and_persistence" test_push_get_and_persistence;
           test_case "set_pop_and_peek" test_set_pop_and_peek;
           test_case "front_and_back_operations" test_front_and_back_operations;
+          test_case "pop_back_head_only_vector"
+            test_pop_back_head_only_vector;
           test_case "write_operations_keep_all_historical_versions_persistent"
             test_write_operations_keep_all_historical_versions_persistent;
+        ] );
+      ( "properties",
+        [
+          QCheck_alcotest.to_alcotest ~speed_level:`Quick
+            property_public_operations_preserve_invariants;
         ] );
       ( "rrb",
         [
@@ -864,6 +1109,8 @@ let () =
             test_of_array_keeps_right_edge_in_tail;
           test_case "subvec_keeps_right_edge_in_tail"
             test_subvec_keeps_right_edge_in_tail;
+          test_case "pop_back_refills_tail_from_root"
+            test_pop_back_refills_tail_from_root;
           test_case "push_front_large_allocation_is_linear"
             test_push_front_large_allocation_is_linear;
           test_case "push_front_same_height_fast_path_allocation"
