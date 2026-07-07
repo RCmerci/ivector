@@ -1,4 +1,4 @@
 (executable
  (name benchmark)
  (modules benchmark)
- (libraries ivector batteries bechamel))
+ (libraries rrbvec batteries bechamel))

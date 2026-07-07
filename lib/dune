@@ -1,4 +1,4 @@
 (library
- (name ivector)
- (public_name ivector)
+ (name rrbvec)
+ (public_name rrbvec)
  (wrapped false))

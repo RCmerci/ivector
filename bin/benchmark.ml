@@ -59,7 +59,7 @@ let parse_config () =
   in
   Arg.parse spec
     (fun arg -> raise (Arg.Bad ("unexpected argument: " ^ arg)))
-    "ivector-bench [--size N] [--reads N] [--updates N] [--limit N] [--quota-ms N]";
+    "rrbvec-bench [--size N] [--reads N] [--updates N] [--limit N] [--quota-ms N]";
   { size = !size; reads = !reads; updates = !updates; limit = !limit; quota_ms = !quota_ms }
 
 let check name expected actual =
