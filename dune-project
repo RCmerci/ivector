@@ -22,7 +22,8 @@
  (depends
   ocaml
   (alcotest :with-test)
-  (batteries :with-test))
+  (batteries :with-test)
+  (bechamel :with-test))
  (tags
   ("add topics" "to describe" your project)))
 
