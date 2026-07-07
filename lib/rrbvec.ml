@@ -704,18 +704,20 @@ let fold_right f v acc =
   let acc = fold_right_node f v.root acc in
   fold_array_right_range f v.head 0 (Array.length v.head) acc
 
-let node_with_tail v =
-  let root =
-    if Array.length v.head = 0 then v.root else concat_nodes (Leaf v.head) v.root
-  in
-  if Array.length v.tail = 0 then root else concat_nodes root (Leaf v.tail)
+let leaf_if_nonempty values =
+  if Array.length values = 0 then Empty else Leaf values
+
+let middle_root left right =
+  concat_nodes
+    (concat_nodes left.root (leaf_if_nonempty left.tail))
+    (concat_nodes (leaf_if_nonempty right.head) right.root)
 
 let concat left right =
   if left.count = 0 then right
   else if right.count = 0 then left
   else if right.count <= width then
     fold_left (fun acc value -> push_back_impl acc value) left right
-  else make_vector (concat_nodes (node_with_tail left) (node_with_tail right))
+  else make_with_edges left.head (middle_root left right) right.tail
 
 let push_back = push_back_impl
 

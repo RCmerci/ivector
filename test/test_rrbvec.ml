@@ -99,6 +99,14 @@ let regular_size_table_count v =
   in
   node_size_table_count (Obj.field (Obj.repr v) 1)
 
+let header_tail_length v =
+  Array.length (Obj.magic (Obj.field (Obj.repr v) 2) : int array)
+
+let header_tailoff v = (Obj.magic (Obj.field (Obj.repr v) 3) : int)
+
+let header_head_length v =
+  Array.length (Obj.magic (Obj.field (Obj.repr v) 4) : int array)
+
 type 'a raw_node =
   | Raw_empty
   | Raw_leaf of 'a array
@@ -457,6 +465,48 @@ let test_concat_and_subvec_preserve_order () =
   check_raises_invalid_arg "subvec past end" (fun () ->
       ignore (subvec combined 0 1121))
 
+let test_concat_preserves_outer_edge_caches () =
+  let left_head = [ -4; -3; -2; -1 ] in
+  let left =
+    of_array (Array.init 64 Fun.id)
+    |> fun values ->
+    List.fold_left push_back values (List.init 9 (fun i -> 64 + i))
+    |> fun values ->
+    List.fold_right (fun value acc -> push_front acc value) left_head values
+  in
+  let right_head = [ 1_000; 1_001; 1_002; 1_003; 1_004 ] in
+  let right =
+    of_array (Array.init 64 (fun i -> 2_000 + i))
+    |> fun values ->
+    List.fold_left push_back values (List.init 7 (fun i -> 3_000 + i))
+    |> fun values ->
+    List.fold_right (fun value acc -> push_front acc value) right_head values
+  in
+  let combined = concat left right in
+  check_int "concat preserves left head cache" (List.length left_head)
+    (header_head_length combined);
+  check_int "concat preserves right tail cache" 7 (header_tail_length combined);
+  check_int "concat tailoff matches right tail"
+    (length combined - header_tail_length combined)
+    (header_tailoff combined);
+  check_invariants "concat preserves edge caches" combined;
+  check_list "concat preserves cached edge order"
+    (to_list left @ to_list right)
+    (to_list combined)
+
+let test_concat_small_right_extends_existing_tail () =
+  let left =
+    of_array (Array.init 64 Fun.id)
+    |> fun values ->
+    List.fold_left push_back values (List.init 9 (fun i -> 64 + i))
+  in
+  let right = of_array (Array.init 12 (fun i -> 1_000 + i)) in
+  let combined = concat left right in
+  check_invariants "concat small right extends existing tail" combined;
+  check_int "concat small right tail length" 21 (header_tail_length combined);
+  check_list "concat small right order" (to_list left @ to_list right)
+    (to_list combined)
+
 let test_subvec_slices_head_root_and_tail () =
   let root_values = range 2048 in
   let tail_values = List.init 15 (fun i -> i + 2048) in
@@ -722,6 +772,10 @@ let () =
         [
           test_case "concat_and_subvec_preserve_order"
             test_concat_and_subvec_preserve_order;
+          test_case "concat_preserves_outer_edge_caches"
+            test_concat_preserves_outer_edge_caches;
+          test_case "concat_small_right_extends_existing_tail"
+            test_concat_small_right_extends_existing_tail;
           test_case "subvec_slices_head_root_and_tail"
             test_subvec_slices_head_root_and_tail;
           test_case "subvec_small_slice_allocation_does_not_scale_with_vector_length"
