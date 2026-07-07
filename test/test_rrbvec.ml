@@ -361,8 +361,8 @@ let test_front_and_back_operations () =
     (to_list (prepend (of_list [ 1; 2 ]) (of_list [ 3; 4 ])));
   check_list "prepend_list" [ 1; 2; 3; 4 ]
     (to_list (prepend_list (of_list [ 3; 4 ]) [ 1; 2 ]));
-  check_list "prepend_arrat" [ 1; 2; 3; 4 ]
-    (to_list (prepend_arrat (of_list [ 3; 4 ]) [| 1; 2 |]));
+  check_list "prepend_array" [ 1; 2; 3; 4 ]
+    (to_list (prepend_array (of_list [ 3; 4 ]) [| 1; 2 |]));
   check_raises_invalid_arg "pop_front empty" (fun () -> ignore (pop_front empty));
   check_raises_invalid_arg "pop_back empty" (fun () -> ignore (pop_back empty));
   check_raises_invalid_arg "peek_front empty" (fun () -> ignore (peek_front empty));
@@ -557,7 +557,7 @@ let apply_operation step values expected operation =
     | Prepend_list left ->
         (prepend_list values left, left @ expected)
     | Prepend_array left ->
-        (prepend_arrat values (Array.of_list left), left @ expected)
+        (prepend_array values (Array.of_list left), left @ expected)
   in
   check_property_state step operation values expected;
   (values, expected)
@@ -653,10 +653,10 @@ let test_write_operations_keep_all_historical_versions_persistent () =
       expected9
   in
   let prepended = [| -106; -105; -104 |] in
-  let v10 = prepend_arrat v9 prepended in
+  let v10 = prepend_array v9 prepended in
   prepended.(0) <- 106;
   let expected10 = [ -106; -105; -104 ] @ expected9 in
-  let v10 = remember "after prepend_arrat" v10 expected10 in
+  let v10 = remember "after prepend_array" v10 expected10 in
   let v11 = concat (subvec v10 0 40) (subvec v10 40 (length v10)) in
   let v11 = remember "after concat of subvecs" v11 expected10 in
   let expected12 = expected10 @ [ 20000 ] in
@@ -1080,6 +1080,24 @@ let test_to_list_large_allocation_avoids_intermediate_array () =
   check_int "large to_list last" (size - 1) (List.nth values (size - 1));
   check_allocated_less_than "large to_list allocation" 3_000_000. allocated
 
+let test_list_builders_avoid_full_intermediate_array () =
+  let size = 100_000 in
+  let values = List.init size Fun.id in
+  let check_builder name f =
+    Gc.compact ();
+    let before = Gc.allocated_bytes () in
+    let vector = f values in
+    let allocated = Gc.allocated_bytes () -. before in
+    check_invariants name vector;
+    check_int (name ^ " length") size (length vector);
+    check_int (name ^ " first") 0 (peek_front vector);
+    check_int (name ^ " last") (size - 1) (peek_back vector);
+    check_allocated_less_than (name ^ " allocation") 1_700_000. allocated
+  in
+  check_builder "large of_list" of_list;
+  check_builder "large append_list" (append_list empty);
+  check_builder "large prepend_list" (prepend_list empty)
+
 let test_map_large_allocation_is_leaf_linear () =
   let size = 100_000 in
   let v = of_array (Array.init size Fun.id) in
@@ -1211,6 +1229,8 @@ let () =
             test_fold_right_large_allocation_is_linear;
           test_case "to_list_large_allocation_avoids_intermediate_array"
             test_to_list_large_allocation_avoids_intermediate_array;
+          test_case "list_builders_avoid_full_intermediate_array"
+            test_list_builders_avoid_full_intermediate_array;
           test_case "map_large_allocation_is_leaf_linear"
             test_map_large_allocation_is_leaf_linear;
           test_case "map_visits_values_in_order"

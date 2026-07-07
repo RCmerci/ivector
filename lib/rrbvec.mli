@@ -32,7 +32,7 @@ val prepend_list : 'a t -> 'a list -> 'a t
 
 val append_array : 'a t -> 'a array -> 'a t
 
-val prepend_arrat : 'a t -> 'a array -> 'a t
+val prepend_array : 'a t -> 'a array -> 'a t
 
 val fold_left : ('acc -> 'a -> 'acc) -> 'acc -> 'a t -> 'acc
 

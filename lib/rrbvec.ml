@@ -951,6 +951,43 @@ let rec build_level nodes =
     in
     build_level parents
 
+let root_of_full_chunks_rev chunks_rev =
+  match chunks_rev with
+  | [] -> Empty
+  | first :: _ ->
+      let leaf_count = List.length chunks_rev in
+      let leaves = Array.make leaf_count (Leaf first) in
+      let rec fill index = function
+        | [] -> ()
+        | chunk :: rest ->
+            Array.unsafe_set leaves index (Leaf chunk);
+            fill (index - 1) rest
+      in
+      fill (leaf_count - 1) chunks_rev;
+      build_level leaves
+
+let of_list values =
+  match values with
+  | [] -> empty
+  | first :: rest ->
+      let first_chunk = Array.make width first in
+      let rec loop chunks_rev chunk chunk_length = function
+        | [] ->
+            let tail =
+              if chunk_length = width then chunk
+              else Array.sub chunk 0 chunk_length
+            in
+            make_with_edges [||] (root_of_full_chunks_rev chunks_rev) tail
+        | value :: rest ->
+            if chunk_length = width then
+              let next_chunk = Array.make width value in
+              loop (chunk :: chunks_rev) next_chunk 1 rest
+            else (
+              Array.unsafe_set chunk chunk_length value;
+              loop chunks_rev chunk (chunk_length + 1) rest)
+      in
+      loop [] first_chunk 1 rest
+
 let of_array values =
   let count = Array.length values in
   if count = 0 then empty
@@ -1107,17 +1144,15 @@ let append_array v values =
 let append_list v values =
   match values with
   | [] -> v
-  | _ -> append_array v (Array.of_list values)
+  | _ -> concat v (of_list values)
 
 let prepend_list v values =
   match values with
   | [] -> v
-  | _ -> prepend (of_array (Array.of_list values)) v
+  | _ -> prepend (of_list values) v
 
-let prepend_arrat v values =
+let prepend_array v values =
   if Array.length values = 0 then v else prepend (of_array values) v
-
-let of_list values = of_array (Array.of_list values)
 
 let to_list v = fold_right (fun value acc -> value :: acc) v []
 
