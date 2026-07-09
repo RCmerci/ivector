@@ -17,48 +17,19 @@
 (documentation https://url/to/documentation)
 
 (package
- (name rrbvec-core)
- (synopsis "RRB vector core implementation")
- (description "Platform-independent RRB vector implementation.")
- (depends ocaml)
- (tags
-  (rrb vector persistent)))
-
-(package
- (name rrbvec-native)
- (synopsis "Native implementation package for rrbvec")
- (description "Native implementation package for rrbvec-core.")
+ (name rrbvec)
+ (synopsis "RRB vector implementation")
+ (description "Persistent RRB vector implementation for native, js_of_ocaml, and Melange.")
  (depends
   ocaml
-  rrbvec-core
+  js_of_ocaml
+  melange
   (alcotest :with-test)
   (batteries :with-test)
   (bechamel :with-test)
   (qcheck :with-test)
   (qcheck-alcotest :with-test))
  (tags
-  (rrb vector persistent native)))
-
-(package
- (name rrbvec-jsoo)
- (synopsis "js_of_ocaml implementation package for rrbvec")
- (description "js_of_ocaml implementation package for rrbvec-core.")
- (depends
-  ocaml
-  rrbvec-core
-  js_of_ocaml)
- (tags
-  (rrb vector persistent js_of_ocaml)))
-
-(package
- (name rrbvec-melange)
- (synopsis "Melange implementation package for rrbvec")
- (description "Melange implementation package for rrbvec-core.")
- (depends
-  ocaml
-  rrbvec-core
-  melange)
- (tags
-  (rrb vector persistent melange)))
+  (rrb vector persistent native js_of_ocaml melange)))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html

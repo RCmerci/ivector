@@ -1,13 +1,13 @@
 (executable
  (name benchmark)
  (modules benchmark)
- (libraries rrbvec-native batteries bechamel))
+ (libraries rrbvec batteries bechamel))
 
 (executable
  (name benchmark_jsoo)
  (modes js)
  (modules benchmark_jsoo)
- (libraries rrbvec-jsoo js_of_ocaml))
+ (libraries rrbvec js_of_ocaml))
 
 (melange.emit
  (target benchmark-melange)
@@ -16,7 +16,7 @@
  (modules benchmark_melange)
  (preprocess
   (pps melange.ppx))
- (libraries rrbvec-melange))
+ (libraries rrbvec))
 
 (rule
  (alias benchmark-js)

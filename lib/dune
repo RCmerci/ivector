@@ -1,6 +1,5 @@
 (library
- (name rrbvec_core)
- (public_name rrbvec-core)
- (virtual_modules platform)
+ (name rrbvec)
+ (public_name rrbvec)
  (modes native byte melange)
  (wrapped false))
