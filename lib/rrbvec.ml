@@ -1236,6 +1236,404 @@ let prepend_array v values =
 
 let to_list v = fold_right (fun value acc -> value :: acc) v []
 
+let reverse_array values =
+  let length = Array.length values in
+  if length = 0 then [||]
+  else
+    let reversed = Array.make length (Array.unsafe_get values (length - 1)) in
+    for index = 0 to length - 1 do
+      Array.unsafe_set reversed index
+        (Array.unsafe_get values (length - 1 - index))
+    done;
+    reversed
+
+let rec rev_node = function
+  | Empty -> Empty
+  | Leaf values -> Leaf (reverse_array values)
+  | Branch branch ->
+      let length = Array.length branch.children in
+      let children = Array.make length Empty in
+      for index = 0 to length - 1 do
+        Array.unsafe_set children index
+          (rev_node (Array.unsafe_get branch.children (length - 1 - index)))
+      done;
+      make_branch_node children
+
+let rev = function
+  | Empty_vector -> empty
+  | Vector v ->
+      make_with_edges (reverse_array v.tail) (rev_node v.root)
+        (reverse_array v.head)
+
+let concat_map f v = fold_left (fun acc value -> concat acc (f value)) empty v
+
+let map2 f left right =
+  let count = length left in
+  if count <> length right then invalid_arg "Rrbvec.map2";
+  if count = 0 then empty
+  else
+    let left = to_array left in
+    let right = to_array right in
+    of_array
+      (Array.init count (fun index ->
+           f (Array.unsafe_get left index) (Array.unsafe_get right index)))
+
+let combine left right = map2 (fun left right -> (left, right)) left right
+
+exception Predicate_found
+exception Predicate_failed
+
+let array_raise_exists p values =
+  for index = 0 to Array.length values - 1 do
+    if p (Array.unsafe_get values index) then raise Predicate_found
+  done
+
+let rec node_raise_exists p = function
+  | Empty -> ()
+  | Leaf values -> array_raise_exists p values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        node_raise_exists p (Array.unsafe_get children index)
+      done
+
+let exists p v =
+  match v with
+  | Empty_vector -> false
+  | Vector v ->
+      (try
+         array_raise_exists p v.head;
+         node_raise_exists p v.root;
+         array_raise_exists p v.tail;
+         false
+       with Predicate_found -> true)
+
+let array_raise_for_all p values =
+  for index = 0 to Array.length values - 1 do
+    if not (p (Array.unsafe_get values index)) then raise Predicate_failed
+  done
+
+let rec node_raise_for_all p = function
+  | Empty -> ()
+  | Leaf values -> array_raise_for_all p values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        node_raise_for_all p (Array.unsafe_get children index)
+      done
+
+let for_all p v =
+  match v with
+  | Empty_vector -> true
+  | Vector v ->
+      (try
+         array_raise_for_all p v.head;
+         node_raise_for_all p v.root;
+         array_raise_for_all p v.tail;
+         true
+       with Predicate_failed -> false)
+
+let array_raise_find p found values =
+  for index = 0 to Array.length values - 1 do
+    let value = Array.unsafe_get values index in
+    if p value then found value
+  done
+
+let rec node_raise_find p found = function
+  | Empty -> ()
+  | Leaf values -> array_raise_find p found values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        node_raise_find p found (Array.unsafe_get children index)
+      done
+
+let find_opt p v =
+  match v with
+  | Empty_vector -> None
+  | Vector v ->
+      let exception Found in
+      let result = ref None in
+      let found value =
+        result := Some value;
+        raise Found
+      in
+      (try
+         array_raise_find p found v.head;
+         node_raise_find p found v.root;
+         array_raise_find p found v.tail;
+         None
+       with Found -> !result)
+
+let find p v =
+  match v with
+  | Empty_vector -> raise Not_found
+  | Vector v ->
+      let exception Found in
+      let result = ref None in
+      let found value =
+        result := Some value;
+        raise Found
+      in
+      (try
+         array_raise_find p found v.head;
+         node_raise_find p found v.root;
+         array_raise_find p found v.tail;
+         raise Not_found
+       with Found -> Option.get !result)
+
+let iter_array f values =
+  for index = 0 to Array.length values - 1 do
+    f (Array.unsafe_get values index)
+  done
+
+let rec iter_node f = function
+  | Empty -> ()
+  | Leaf values -> iter_array f values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        iter_node f (Array.unsafe_get children index)
+      done
+
+let iter f v =
+  match v with
+  | Empty_vector -> ()
+  | Vector v ->
+      iter_array f v.head;
+      iter_node f v.root;
+      iter_array f v.tail
+
+let iteri_array f index values =
+  let index = ref index in
+  for offset = 0 to Array.length values - 1 do
+    f !index (Array.unsafe_get values offset);
+    incr index
+  done;
+  !index
+
+let rec iteri_node f index = function
+  | Empty -> index
+  | Leaf values -> iteri_array f index values
+  | Branch branch ->
+      let index = ref index in
+      let children = branch.children in
+      for child_index = 0 to Array.length children - 1 do
+        index := iteri_node f !index (Array.unsafe_get children child_index)
+      done;
+      !index
+
+let iteri f v =
+  match v with
+  | Empty_vector -> ()
+  | Vector v ->
+      let index = iteri_array f 0 v.head in
+      let index = iteri_node f index v.root in
+      ignore (iteri_array f index v.tail)
+
+let mapi_array f index values =
+  let length = Array.length values in
+  if length = 0 then [||]
+  else
+    let first = f !index (Array.unsafe_get values 0) in
+    incr index;
+    let mapped = Array.make length first in
+    for offset = 1 to length - 1 do
+      Array.unsafe_set mapped offset
+        (f !index (Array.unsafe_get values offset));
+      incr index
+    done;
+    mapped
+
+let rec mapi_node f index = function
+  | Empty -> Empty
+  | Leaf values -> Leaf (mapi_array f index values)
+  | Branch branch ->
+      let children_length = Array.length branch.children in
+      let first = mapi_node f index (Array.unsafe_get branch.children 0) in
+      let children = Array.make children_length first in
+      for child_index = 1 to children_length - 1 do
+        Array.unsafe_set children child_index
+          (mapi_node f index (Array.unsafe_get branch.children child_index))
+      done;
+      Branch { branch with children }
+
+let mapi f v =
+  match v with
+  | Empty_vector -> empty
+  | Vector v ->
+      let index = ref 0 in
+      let head = mapi_array f index v.head in
+      let root = mapi_node f index v.root in
+      let tail = mapi_array f index v.tail in
+      Vector { count = v.count; root; tail; tailoff = v.tailoff; head }
+
+let find_map f v =
+  let exception Found in
+  let result = ref None in
+  try
+    iter
+      (fun value ->
+        match f value with
+        | None -> ()
+        | Some value ->
+            result := Some value;
+            raise Found)
+      v;
+    None
+  with Found -> !result
+
+let mem value v = exists (( = ) value) v
+
+let init_array length start f =
+  if length = 0 then [||]
+  else
+    let first = f start in
+    let values = Array.make length first in
+    for offset = 1 to length - 1 do
+      Array.unsafe_set values offset (f (start + offset))
+    done;
+    values
+
+let init length f =
+  if length < 0 then invalid_arg "Rrbvec.init";
+  if length = 0 then empty
+  else if length <= width then
+    make_with_edges [||] Empty (init_array length 0 f)
+  else
+    let tail_length =
+      let remainder = length mod width in
+      if remainder = 0 then width else remainder
+    in
+    let root_count = length - tail_length in
+    let leaf_count = root_count / width in
+    let first_leaf = Leaf (init_array width 0 f) in
+    let leaves = Array.make leaf_count first_leaf in
+    for leaf_index = 1 to leaf_count - 1 do
+      Array.unsafe_set leaves leaf_index
+        (Leaf (init_array width (leaf_index * width) f))
+    done;
+    let tail = init_array tail_length root_count f in
+    make_with_edges [||] (build_level leaves) tail
+
+let sort compare v = of_list (List.sort compare (to_list v))
+
+let sort_uniq compare v = of_list (List.sort_uniq compare (to_list v))
+
+type 'a chunk_builder = {
+  mutable chunks_rev : 'a array list;
+  mutable chunk : 'a array option;
+  mutable chunk_length : int;
+  mutable chunk_count : int;
+}
+
+let create_chunk_builder () =
+  { chunks_rev = []; chunk = None; chunk_length = 0; chunk_count = 0 }
+
+let chunk_builder_add builder value =
+  builder.chunk_count <- builder.chunk_count + 1;
+  match builder.chunk with
+  | None ->
+      builder.chunk <- Some (Array.make width value);
+      builder.chunk_length <- 1
+  | Some chunk when builder.chunk_length = width ->
+      builder.chunks_rev <- chunk :: builder.chunks_rev;
+      builder.chunk <- Some (Array.make width value);
+      builder.chunk_length <- 1
+  | Some chunk ->
+      Array.unsafe_set chunk builder.chunk_length value;
+      builder.chunk_length <- builder.chunk_length + 1
+
+let chunk_builder_result builder =
+  if builder.chunk_count = 0 then empty
+  else
+    let tail =
+      match builder.chunk with
+      | None -> [||]
+      | Some chunk ->
+          if builder.chunk_length = width then chunk
+          else Array.sub chunk 0 builder.chunk_length
+    in
+    make_with_edges [||] (root_of_full_chunks_rev builder.chunks_rev) tail
+
+let filter_array p builder values =
+  for index = 0 to Array.length values - 1 do
+    let value = Array.unsafe_get values index in
+    if p value then chunk_builder_add builder value
+  done
+
+let rec filter_node p builder = function
+  | Empty -> ()
+  | Leaf values -> filter_array p builder values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        filter_node p builder (Array.unsafe_get children index)
+      done
+
+let filter p v =
+  match v with
+  | Empty_vector -> empty
+  | Vector v ->
+      let builder = create_chunk_builder () in
+      filter_array p builder v.head;
+      filter_node p builder v.root;
+      filter_array p builder v.tail;
+      chunk_builder_result builder
+
+let filter_map_array f builder values =
+  for index = 0 to Array.length values - 1 do
+    match f (Array.unsafe_get values index) with
+    | None -> ()
+    | Some value -> chunk_builder_add builder value
+  done
+
+let rec filter_map_node f builder = function
+  | Empty -> ()
+  | Leaf values -> filter_map_array f builder values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        filter_map_node f builder (Array.unsafe_get children index)
+      done
+
+let filter_map f v =
+  match v with
+  | Empty_vector -> empty
+  | Vector v ->
+      let builder = create_chunk_builder () in
+      filter_map_array f builder v.head;
+      filter_map_node f builder v.root;
+      filter_map_array f builder v.tail;
+      chunk_builder_result builder
+
+let partition_array p left right values =
+  for index = 0 to Array.length values - 1 do
+    let value = Array.unsafe_get values index in
+    if p value then chunk_builder_add left value
+    else chunk_builder_add right value
+  done
+
+let rec partition_node p left right = function
+  | Empty -> ()
+  | Leaf values -> partition_array p left right values
+  | Branch branch ->
+      let children = branch.children in
+      for index = 0 to Array.length children - 1 do
+        partition_node p left right (Array.unsafe_get children index)
+      done
+
+let partition p v =
+  match v with
+  | Empty_vector -> (empty, empty)
+  | Vector v ->
+      let left = create_chunk_builder () in
+      let right = create_chunk_builder () in
+      partition_array p left right v.head;
+      partition_node p left right v.root;
+      partition_array p left right v.tail;
+      (chunk_builder_result left, chunk_builder_result right)
+
 (*
   Internal invariants checked by [invariants]:
 

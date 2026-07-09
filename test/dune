@@ -3,6 +3,11 @@
  (modules test_rrbvec)
  (libraries rrbvec alcotest qcheck-core qcheck-alcotest))
 
+(test
+ (name test_public_api)
+ (modules test_public_api)
+ (libraries rrbvec alcotest))
+
 (executable
  (name native_smoke)
  (modules native_smoke)

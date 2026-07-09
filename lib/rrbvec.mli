@@ -78,6 +78,74 @@ val fold_right : ('a -> 'acc -> 'acc) -> 'a t -> 'acc -> 'acc
 (** Return a vector containing [f] applied to each value. *)
 val map : ('a -> 'b) -> 'a t -> 'b t
 
+(** Return a vector containing the values that satisfy [p], preserving order. *)
+val filter : ('a -> bool) -> 'a t -> 'a t
+
+(** Return a vector containing the [Some] results of [f], preserving order. *)
+val filter_map : ('a -> 'b option) -> 'a t -> 'b t
+
+(** Map each value to a vector and concatenate the results in order. *)
+val concat_map : ('a -> 'b t) -> 'a t -> 'b t
+
+(** Return a vector containing [f] applied to matching values from two vectors.
+
+    Raises [Invalid_argument] when the vectors have different lengths. *)
+val map2 : ('a -> 'b -> 'c) -> 'a t -> 'b t -> 'c t
+
+(** Return a vector of pairs from two vectors.
+
+    Raises [Invalid_argument] when the vectors have different lengths. *)
+val combine : 'a t -> 'b t -> ('a * 'b) t
+
+(** Return [true] when any value satisfies [p]. Stops at the first match. *)
+val exists : ('a -> bool) -> 'a t -> bool
+
+(** Return [true] when every value satisfies [p]. Stops at the first failure. *)
+val for_all : ('a -> bool) -> 'a t -> bool
+
+(** Return the first value that satisfies [p].
+
+    Raises [Not_found] when no value satisfies [p]. *)
+val find : ('a -> bool) -> 'a t -> 'a
+
+(** Return the first value that satisfies [p], or [None] when no value does. *)
+val find_opt : ('a -> bool) -> 'a t -> 'a option
+
+(** Return the first [Some] result of [f], or [None] when [f] returns [None] for
+    every value. *)
+val find_map : ('a -> 'b option) -> 'a t -> 'b option
+
+(** Return [true] when [value] is equal to one of the vector values. *)
+val mem : 'a -> 'a t -> bool
+
+(** Apply [f] to each value from front to back. *)
+val iter : ('a -> unit) -> 'a t -> unit
+
+(** Apply [f] to each value and its index from front to back. *)
+val iteri : (int -> 'a -> unit) -> 'a t -> unit
+
+(** Return a vector containing [f] applied to each index and value. *)
+val mapi : (int -> 'a -> 'b) -> 'a t -> 'b t
+
+(** Return a vector with values in reverse order. *)
+val rev : 'a t -> 'a t
+
+(** Build a vector of length [n] by applying [f] to each index from [0] to
+    [n - 1].
+
+    Raises [Invalid_argument] when [n] is negative. *)
+val init : int -> (int -> 'a) -> 'a t
+
+(** Sort values using [compare], matching [List.sort] semantics. *)
+val sort : ('a -> 'a -> int) -> 'a t -> 'a t
+
+(** Sort values and remove duplicates using [compare], matching
+    [List.sort_uniq] semantics. *)
+val sort_uniq : ('a -> 'a -> int) -> 'a t -> 'a t
+
+(** Partition values by [p], preserving order in both returned vectors. *)
+val partition : ('a -> bool) -> 'a t -> 'a t * 'a t
+
 (** Return the half-open slice [[start], [stop]) as a vector. Returns [None]
     when [start] is negative, [stop] is less than [start], or [stop] is greater
     than [length v]. *)

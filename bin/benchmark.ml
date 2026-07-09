@@ -35,6 +35,16 @@ type group = {
   cases : case list;
 }
 
+let paired_group name rrbvec_run batvect_run =
+  {
+    name;
+    cases =
+      [
+        { name = "Rrbvec"; run = rrbvec_run };
+        { name = "BatVect"; run = batvect_run };
+      ];
+  }
+
 type result = {
   name : string;
   estimated_ms : float option;
@@ -67,6 +77,18 @@ let check name expected actual =
     failwith
       (Printf.sprintf "%s: expected %d, got %d" name expected actual)
 
+let check_bool name expected actual =
+  if expected <> actual then
+    failwith
+      (Printf.sprintf "%s: expected %b, got %b" name expected actual)
+
+let check_int_option name expected actual =
+  if expected <> actual then
+    let show = function None -> "None" | Some value -> "Some " ^ string_of_int value in
+    failwith
+      (Printf.sprintf "%s: expected %s, got %s" name (show expected)
+         (show actual))
+
 let make_indices count modulo_by =
   Array.init count (fun i -> (i * 1_103 + 12_345) mod modulo_by)
 
@@ -79,6 +101,39 @@ let sum_array values = Array.fold_left ( + ) 0 values
 let map_value value = (value * 2) + 1
 let map_rrbvec values = Rrbvec.map map_value values
 let map_batvect values = BatVect.map map_value values
+let keep_value value = value mod 3 <> 1
+let filter_map_value value = if value mod 4 = 0 then Some (value / 2) else None
+let mapi_value index value = index + value + 1
+let public_api_for_all_value value = value >= 0
+
+let sum_rrbvec_iter values =
+  let sum = ref 0 in
+  Rrbvec.iter (fun value -> sum := !sum + value) values;
+  !sum
+
+let sum_batvect_iter values =
+  let sum = ref 0 in
+  BatVect.iter (fun value -> sum := !sum + value) values;
+  !sum
+
+let sum_rrbvec_iteri values =
+  let sum = ref 0 in
+  Rrbvec.iteri (fun index value -> sum := !sum + index + value) values;
+  !sum
+
+let sum_batvect_iteri values =
+  let sum = ref 0 in
+  BatVect.iteri (fun index value -> sum := !sum + index + value) values;
+  !sum
+
+let filter_rrbvec values = Rrbvec.filter keep_value values
+let filter_batvect values = BatVect.filter keep_value values
+let filter_map_rrbvec values = Rrbvec.filter_map filter_map_value values
+let filter_map_batvect values = BatVect.filter_map filter_map_value values
+let mapi_rrbvec values = Rrbvec.mapi mapi_value values
+let mapi_batvect values = BatVect.mapi mapi_value values
+let partition_rrbvec values = Rrbvec.partition keep_value values
+let partition_batvect values = BatVect.partition keep_value values
 
 let check_rrbvec_invariants name values =
   try Rrbvec.invariants values
@@ -345,6 +400,140 @@ let verify_push_pop config =
   check_rrbvec_invariants "Rrbvec push then pop" rrbvec_after_push_pop;
   ignore (push_pop_batvect config.size)
 
+let verify_public_api config values =
+  let last = config.size - 1 in
+  let expected_sum = range_sum 0 config.size in
+  let expected_mapi_sum = (2 * expected_sum) + config.size in
+  check "Rrbvec iter sum" expected_sum (sum_rrbvec_iter values.rrbvec);
+  check "BatVect iter sum" expected_sum (sum_batvect_iter values.batvect);
+  check "Rrbvec iteri sum" (2 * expected_sum) (sum_rrbvec_iteri values.rrbvec);
+  check "BatVect iteri sum" (2 * expected_sum) (sum_batvect_iteri values.batvect);
+  let rrbvec_filtered = filter_rrbvec values.rrbvec in
+  let batvect_filtered = filter_batvect values.batvect in
+  check_rrbvec_invariants "Rrbvec filter" rrbvec_filtered;
+  check "filter length" (BatVect.length batvect_filtered)
+    (Rrbvec.length rrbvec_filtered);
+  check "filter sum" (sum_batvect batvect_filtered)
+    (sum_rrbvec rrbvec_filtered);
+  let rrbvec_filter_mapped = filter_map_rrbvec values.rrbvec in
+  let batvect_filter_mapped = filter_map_batvect values.batvect in
+  check_rrbvec_invariants "Rrbvec filter_map" rrbvec_filter_mapped;
+  check "filter_map length" (BatVect.length batvect_filter_mapped)
+    (Rrbvec.length rrbvec_filter_mapped);
+  check "filter_map sum" (sum_batvect batvect_filter_mapped)
+    (sum_rrbvec rrbvec_filter_mapped);
+  let rrbvec_mapi = mapi_rrbvec values.rrbvec in
+  let batvect_mapi = mapi_batvect values.batvect in
+  check_rrbvec_invariants "Rrbvec mapi" rrbvec_mapi;
+  check "Rrbvec mapi length" config.size (Rrbvec.length rrbvec_mapi);
+  check "BatVect mapi length" config.size (BatVect.length batvect_mapi);
+  check "Rrbvec mapi sum" expected_mapi_sum (sum_rrbvec rrbvec_mapi);
+  check "BatVect mapi sum" expected_mapi_sum (sum_batvect batvect_mapi);
+  check_bool "Rrbvec exists" true
+    (Rrbvec.exists (fun value -> value = last) values.rrbvec);
+  check_bool "BatVect exists" true
+    (BatVect.exists (fun value -> value = last) values.batvect);
+  check_bool "Rrbvec for_all" true
+    (Rrbvec.for_all public_api_for_all_value values.rrbvec);
+  check_bool "BatVect for_all" true
+    (BatVect.for_all public_api_for_all_value values.batvect);
+  check "Rrbvec find" last
+    (Rrbvec.find (fun value -> value = last) values.rrbvec);
+  check "BatVect find" last
+    (BatVect.find (fun value -> value = last) values.batvect);
+  check_int_option "Rrbvec find_opt" (Some last)
+    (Rrbvec.find_opt (fun value -> value = last) values.rrbvec);
+  check_int_option "BatVect find_opt" (Some last)
+    (BatVect.find_opt (fun value -> value = last) values.batvect);
+  check_bool "Rrbvec mem" true (Rrbvec.mem last values.rrbvec);
+  check_bool "BatVect mem" true (BatVect.mem last values.batvect);
+  let rrbvec_init = Rrbvec.init config.size Fun.id in
+  let batvect_init = BatVect.init config.size Fun.id in
+  check_rrbvec_invariants "Rrbvec init" rrbvec_init;
+  check "Rrbvec init sum" expected_sum (sum_rrbvec rrbvec_init);
+  check "BatVect init sum" expected_sum (sum_batvect batvect_init);
+  let rrbvec_partition_left, rrbvec_partition_right =
+    partition_rrbvec values.rrbvec
+  in
+  let batvect_partition_left, batvect_partition_right =
+    partition_batvect values.batvect
+  in
+  check_rrbvec_invariants "Rrbvec partition left" rrbvec_partition_left;
+  check_rrbvec_invariants "Rrbvec partition right" rrbvec_partition_right;
+  check "partition left length" (BatVect.length batvect_partition_left)
+    (Rrbvec.length rrbvec_partition_left);
+  check "partition right length" (BatVect.length batvect_partition_right)
+    (Rrbvec.length rrbvec_partition_right);
+  check "partition left sum" (sum_batvect batvect_partition_left)
+    (sum_rrbvec rrbvec_partition_left);
+  check "partition right sum" (sum_batvect batvect_partition_right)
+    (sum_rrbvec rrbvec_partition_right)
+
+let public_api_benchmark_groups config values =
+  let last = config.size - 1 in
+  [
+    paired_group "Public API/filter"
+      (fun () -> ignore (Sys.opaque_identity (filter_rrbvec values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (filter_batvect values.batvect)));
+    paired_group "Public API/filter_map"
+      (fun () -> ignore (Sys.opaque_identity (filter_map_rrbvec values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (filter_map_batvect values.batvect)));
+    paired_group "Public API/iter"
+      (fun () -> ignore (Sys.opaque_identity (sum_rrbvec_iter values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (sum_batvect_iter values.batvect)));
+    paired_group "Public API/iteri"
+      (fun () -> ignore (Sys.opaque_identity (sum_rrbvec_iteri values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (sum_batvect_iteri values.batvect)));
+    paired_group "Public API/mapi"
+      (fun () -> ignore (Sys.opaque_identity (mapi_rrbvec values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (mapi_batvect values.batvect)));
+    paired_group "Public API/exists"
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (Rrbvec.exists (fun value -> value = last) values.rrbvec)))
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (BatVect.exists (fun value -> value = last) values.batvect)));
+    paired_group "Public API/for_all"
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (Rrbvec.for_all public_api_for_all_value values.rrbvec)))
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (BatVect.for_all public_api_for_all_value values.batvect)));
+    paired_group "Public API/find"
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (Rrbvec.find (fun value -> value = last) values.rrbvec)))
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (BatVect.find (fun value -> value = last) values.batvect)));
+    paired_group "Public API/find_opt"
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (Rrbvec.find_opt (fun value -> value = last) values.rrbvec)))
+      (fun () ->
+        ignore
+          (Sys.opaque_identity
+             (BatVect.find_opt (fun value -> value = last) values.batvect)));
+    paired_group "Public API/mem"
+      (fun () -> ignore (Sys.opaque_identity (Rrbvec.mem last values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (BatVect.mem last values.batvect)));
+    paired_group "Public API/init"
+      (fun () -> ignore (Sys.opaque_identity (Rrbvec.init config.size Fun.id)))
+      (fun () -> ignore (Sys.opaque_identity (BatVect.init config.size Fun.id)));
+    paired_group "Public API/partition"
+      (fun () -> ignore (Sys.opaque_identity (partition_rrbvec values.rrbvec)))
+      (fun () -> ignore (Sys.opaque_identity (partition_batvect values.batvect)));
+  ]
+
 let benchmark_groups config values =
   let read_indices = make_indices config.reads config.size in
   let update_indices = make_indices config.updates config.size in
@@ -352,55 +541,60 @@ let benchmark_groups config values =
   let bounds = chunk_bounds config.size (min 8 config.size) in
   let list_values = List.init config.size Fun.id in
   let array_values = Array.init config.size Fun.id in
-  [
-    {
-      name = "Conversion";
-      cases =
-        [
-          { name = "Rrbvec of_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_list list_values))) };
-          { name = "BatVect of_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_list list_values))) };
-          { name = "Rrbvec to_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_list values.rrbvec))) };
-          { name = "BatVect to_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_list values.batvect))) };
-          { name = "Rrbvec of_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_array array_values))) };
-          { name = "BatVect of_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_array array_values))) };
-          { name = "Rrbvec to_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_array values.rrbvec))) };
-          { name = "BatVect to_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_array values.batvect))) };
-        ];
-    };
-    {
-      name = "Sequential write";
-      cases =
-        [
-          { name = "Rrbvec sequential write (push_back)"; run = (fun () -> ignore (Sys.opaque_identity (build_rrbvec config.size))) };
-          { name = "BatVect sequential write (append)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect config.size))) };
-          { name = "Rrbvec sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_rrbvec_front config.size))) };
-          { name = "BatVect sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect_front config.size))) };
-          { name = "Rrbvec sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_rrbvec values.rrbvec))) };
-          { name = "BatVect sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_batvect values.batvect))) };
-          { name = "Rrbvec sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_rrbvec values.rrbvec))) };
-          { name = "BatVect sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_batvect values.batvect))) };
-        ];
-    };
-    {
-      name = "Sequential read";
-      cases =
-        [
-          { name = "Rrbvec sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_rrbvec values.rrbvec))) };
-          { name = "Rrbvec sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.fold_right ( + ) values.rrbvec 0))) };
-          { name = "Rrbvec map"; run = (fun () -> ignore (Sys.opaque_identity (map_rrbvec values.rrbvec))) };
-          { name = "BatVect sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_batvect values.batvect))) };
-          { name = "BatVect sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.fold_right ( + ) values.batvect 0))) };
-          { name = "BatVect map"; run = (fun () -> ignore (Sys.opaque_identity (map_batvect values.batvect))) };
-        ];
-    };
-    {
-      name = "Random read";
-      cases =
-        [
-          { name = "Rrbvec random read"; run = (fun () -> ignore (Sys.opaque_identity (rrbvec_random_sum values.rrbvec read_indices))) };
-          { name = "BatVect random read"; run = (fun () -> ignore (Sys.opaque_identity (batvect_random_sum values.batvect read_indices))) };
-        ];
-    };
+  let base_groups =
+    [
+      {
+        name = "Conversion";
+        cases =
+          [
+            { name = "Rrbvec of_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_list list_values))) };
+            { name = "BatVect of_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_list list_values))) };
+            { name = "Rrbvec to_list"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_list values.rrbvec))) };
+            { name = "BatVect to_list"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_list values.batvect))) };
+            { name = "Rrbvec of_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.of_array array_values))) };
+            { name = "BatVect of_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.of_array array_values))) };
+            { name = "Rrbvec to_array"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.to_array values.rrbvec))) };
+            { name = "BatVect to_array"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.to_array values.batvect))) };
+          ];
+      };
+      {
+        name = "Sequential write";
+        cases =
+          [
+            { name = "Rrbvec sequential write (push_back)"; run = (fun () -> ignore (Sys.opaque_identity (build_rrbvec config.size))) };
+            { name = "BatVect sequential write (append)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect config.size))) };
+            { name = "Rrbvec sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_rrbvec_front config.size))) };
+            { name = "BatVect sequential write (push_front)"; run = (fun () -> ignore (Sys.opaque_identity (build_batvect_front config.size))) };
+            { name = "Rrbvec sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_rrbvec values.rrbvec))) };
+            { name = "BatVect sequential pop_back"; run = (fun () -> ignore (Sys.opaque_identity (pop_back_batvect values.batvect))) };
+            { name = "Rrbvec sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_rrbvec values.rrbvec))) };
+            { name = "BatVect sequential pop_front"; run = (fun () -> ignore (Sys.opaque_identity (pop_front_batvect values.batvect))) };
+          ];
+      };
+      {
+        name = "Sequential read";
+        cases =
+          [
+            { name = "Rrbvec sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_rrbvec values.rrbvec))) };
+            { name = "Rrbvec sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (Rrbvec.fold_right ( + ) values.rrbvec 0))) };
+            { name = "Rrbvec map"; run = (fun () -> ignore (Sys.opaque_identity (map_rrbvec values.rrbvec))) };
+            { name = "BatVect sequential read (fold_left)"; run = (fun () -> ignore (Sys.opaque_identity (sum_batvect values.batvect))) };
+            { name = "BatVect sequential read (fold_right)"; run = (fun () -> ignore (Sys.opaque_identity (BatVect.fold_right ( + ) values.batvect 0))) };
+            { name = "BatVect map"; run = (fun () -> ignore (Sys.opaque_identity (map_batvect values.batvect))) };
+          ];
+      };
+    ]
+  in
+  let remaining_groups =
+    [
+      {
+        name = "Random read";
+        cases =
+          [
+            { name = "Rrbvec random read"; run = (fun () -> ignore (Sys.opaque_identity (rrbvec_random_sum values.rrbvec read_indices))) };
+            { name = "BatVect random read"; run = (fun () -> ignore (Sys.opaque_identity (batvect_random_sum values.batvect read_indices))) };
+          ];
+      };
     {
       name = "Random write";
       cases =
@@ -461,7 +655,9 @@ let benchmark_groups config values =
           { name = "BatVect append then pop"; run = (fun () -> ignore (Sys.opaque_identity (push_pop_batvect config.size))) };
         ];
     };
-  ]
+    ]
+  in
+  base_groups @ public_api_benchmark_groups config values @ remaining_groups
 
 let bechamel_name group_name case_name = group_name ^ "/" ^ case_name
 
@@ -542,6 +738,7 @@ let verify config values =
   verify_random_write config values (make_indices config.updates config.size);
   verify_map config values;
   verify_conversions config values;
+  verify_public_api config values;
   verify_subvec_concat config values;
   verify_push_pop config
 
