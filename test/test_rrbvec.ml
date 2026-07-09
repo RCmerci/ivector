@@ -30,6 +30,27 @@ let check_raises_invalid_arg name f =
         (Printexc.to_string exn)
   | _ -> Alcotest.failf "%s: expected Invalid_argument" name
 
+let expect_some name = function
+  | Some value -> value
+  | None -> Alcotest.failf "%s: expected Some" name
+
+let expect_none name = function
+  | None -> ()
+  | Some _ -> Alcotest.failf "%s: expected None" name
+
+let nth values index = Rrbvec.nth values index
+
+let pop_back values = expect_some "pop_back" (Rrbvec.pop_back values)
+
+let pop_front values = expect_some "pop_front" (Rrbvec.pop_front values)
+
+let peek_front values = expect_some "peek_front" (Rrbvec.peek_front values)
+
+let peek_back values = expect_some "peek_back" (Rrbvec.peek_back values)
+
+let subvec values start stop =
+  expect_some "subvec" (Rrbvec.subvec values start stop)
+
 let string_contains ~needle haystack =
   let needle_length = String.length needle in
   let haystack_length = String.length haystack in
@@ -184,9 +205,14 @@ let test_empty () =
   check_int "empty length" 0 (length v);
   check "empty is_empty" (is_empty v);
   check_list "empty to_list" [] (to_list v);
-  check_raises_invalid_arg "get empty" (fun () -> ignore (get v 0));
-  check_raises_invalid_arg "pop empty" (fun () -> ignore (pop_back v));
-  check_raises_invalid_arg "peek empty" (fun () -> ignore (peek_back v))
+  check_list "empty subvec" [] (to_list (subvec v 0 0));
+  check_raises_invalid_arg "nth empty" (fun () -> ignore (Rrbvec.nth v 0));
+  check_raises_invalid_arg "nth negative" (fun () -> ignore (Rrbvec.nth v (-1)));
+  expect_none "nth_opt empty" (Rrbvec.nth_opt v 0);
+  expect_none "nth_opt negative" (Rrbvec.nth_opt v (-1));
+  expect_none "pop empty" (Rrbvec.pop_back v);
+  expect_none "peek empty" (Rrbvec.peek_back v);
+  expect_none "subvec empty past end" (Rrbvec.subvec v 0 1)
 
 let test_invariants_hold_for_public_operations () =
   List.iter
@@ -330,7 +356,7 @@ let test_size_table_lookup_starts_from_radix_slot () =
       }
   in
   let values = raw_vector root in
-  check_int "size table lookup from radix slot" 3 (get values 96)
+  check_int "size table lookup from radix slot" 3 (nth values 96)
 
 let test_push_get_and_persistence () =
   List.iter
@@ -340,7 +366,7 @@ let test_push_get_and_persistence () =
       check_int "length" size (length v);
       check_list "to_list" (range size) (to_list v);
       for i = 0 to size - 1 do
-        check_int "get" i (get v i)
+        check_int "nth" i (nth v i)
       done)
     [ 1; 31; 32; 33; 1023; 1024; 1025 ];
   let v0 = of_list [ 1; 2; 3 ] in
@@ -348,13 +374,30 @@ let test_push_get_and_persistence () =
   check_list "old vector after push" [ 1; 2; 3 ] (to_list v0);
   check_list "new vector after push" [ 1; 2; 3; 4 ] (to_list v1)
 
+let test_nth_tail_read_allocation_does_not_allocate_options () =
+  let size = rrb_width in
+  let reads = 200_000 in
+  let values = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let sum = ref 0 in
+  for i = 0 to reads - 1 do
+    let index = i mod size in
+    sum := !sum + nth values index
+  done;
+  let allocated = Gc.allocated_bytes () -. before in
+  check "nth tail read sum is used" (!sum > 0);
+  check_allocated_less_than "nth tail read allocation" 500_000. allocated
+
 let test_set_pop_and_peek () =
   let v0 = of_list (range 1050) in
   let v1 = set v0 10 10010 in
   let v2 = set v1 1049 11049 in
-  check_int "old value preserved" 10 (get v0 10);
-  check_int "updated trie value" 10010 (get v2 10);
-  check_int "updated last value" 11049 (get v2 1049);
+  check_int "old value preserved" 10 (nth v0 10);
+  check_int "updated trie value" 10010 (nth v2 10);
+  check_int "updated last value" 11049 (nth v2 1049);
+  check_raises_invalid_arg "nth at count" (fun () -> ignore (Rrbvec.nth v2 1050));
+  expect_none "nth_opt at count" (Rrbvec.nth_opt v2 1050);
   check_raises_invalid_arg "set at count" (fun () -> ignore (set v2 1050 21050));
   check_list "pop removes last"
     (list_slice (to_list v2) 0 (length v2 - 1))
@@ -382,10 +425,10 @@ let test_front_and_back_operations () =
     (to_list (prepend_list (of_list [ 3; 4 ]) [ 1; 2 ]));
   check_list "prepend_array" [ 1; 2; 3; 4 ]
     (to_list (prepend_array (of_list [ 3; 4 ]) [| 1; 2 |]));
-  check_raises_invalid_arg "pop_front empty" (fun () -> ignore (pop_front empty));
-  check_raises_invalid_arg "pop_back empty" (fun () -> ignore (pop_back empty));
-  check_raises_invalid_arg "peek_front empty" (fun () -> ignore (peek_front empty));
-  check_raises_invalid_arg "peek_back empty" (fun () -> ignore (peek_back empty))
+  expect_none "pop_front empty" (Rrbvec.pop_front empty);
+  expect_none "pop_back empty" (Rrbvec.pop_back empty);
+  expect_none "peek_front empty" (Rrbvec.peek_front empty);
+  expect_none "peek_back empty" (Rrbvec.peek_back empty)
 
 let test_pop_back_head_only_vector () =
   let values = push_front empty 42 in
@@ -496,8 +539,7 @@ let apply_operation step values expected operation =
     | Pop_back -> (
         match expected with
         | [] ->
-            check_raises_invalid_arg "property pop_back empty" (fun () ->
-                ignore (pop_back values));
+            expect_none "property pop_back empty" (Rrbvec.pop_back values);
             (values, expected)
         | _ ->
             let expected_value = List.hd (List.rev expected) in
@@ -509,8 +551,7 @@ let apply_operation step values expected operation =
     | Pop_front -> (
         match expected with
         | [] ->
-            check_raises_invalid_arg "property pop_front empty" (fun () ->
-                ignore (pop_front values));
+            expect_none "property pop_front empty" (Rrbvec.pop_front values);
             (values, expected)
         | expected_value :: rest ->
             let value, values = pop_front values in
@@ -529,21 +570,22 @@ let apply_operation step values expected operation =
           (set values index value, expected)
     | Get raw_index ->
         (if expected = [] then
-          check_raises_invalid_arg "property get empty" (fun () ->
-              ignore (get values 0))
+           (
+             check_raises_invalid_arg "property nth empty" (fun () ->
+                 ignore (Rrbvec.nth values 0));
+             expect_none "property nth_opt empty" (Rrbvec.nth_opt values 0))
          else
           let index = normalize_existing_index expected raw_index in
           let expected_value = List.nth expected index in
-          let value = get values index in
+          let value = nth values index in
           if value <> expected_value then
-            failf "property step %d get %d: expected %d, got %d" step index
+            failf "property step %d nth %d: expected %d, got %d" step index
               expected_value value);
         (values, expected)
     | Peek_back -> (
         match expected with
         | [] ->
-            check_raises_invalid_arg "property peek_back empty" (fun () ->
-                ignore (peek_back values))
+            expect_none "property peek_back empty" (Rrbvec.peek_back values)
         | _ ->
             let expected_value = List.hd (List.rev expected) in
             let value = peek_back values in
@@ -554,8 +596,7 @@ let apply_operation step values expected operation =
     | Peek_front -> (
         match expected with
         | [] ->
-            check_raises_invalid_arg "property peek_front empty" (fun () ->
-                ignore (peek_front values))
+            expect_none "property peek_front empty" (Rrbvec.peek_front values)
         | expected_value :: _ ->
             let value = peek_front values in
             if value <> expected_value then
@@ -706,12 +747,9 @@ let test_concat_and_subvec_preserve_order () =
   check_int "subvec length" 1059 (length slice);
   check_list "subvec order" (List.init 1059 (fun i -> i + 31)) (to_list slice);
   check_list "empty subvec" [] (to_list (subvec combined 10 10));
-  check_raises_invalid_arg "subvec negative start" (fun () ->
-      ignore (subvec combined (-1) 2));
-  check_raises_invalid_arg "subvec inverted range" (fun () ->
-      ignore (subvec combined 2 1));
-  check_raises_invalid_arg "subvec past end" (fun () ->
-      ignore (subvec combined 0 1121))
+  expect_none "subvec negative start" (Rrbvec.subvec combined (-1) 2);
+  expect_none "subvec inverted range" (Rrbvec.subvec combined 2 1);
+  expect_none "subvec past end" (Rrbvec.subvec combined 0 1121)
 
 let test_concat_preserves_outer_edge_caches () =
   let left_head = [ -4; -3; -2; -1 ] in
@@ -823,8 +861,8 @@ let test_repeated_concat_stays_stack_safe () =
   in
   check_invariants "deep concat" combined;
   check_int "deep concat length" size (length combined);
-  check_int "deep concat first" 0 (get combined 0);
-  check_int "deep concat middle" (size / 2) (get combined (size / 2));
+  check_int "deep concat first" 0 (nth combined 0);
+  check_int "deep concat middle" (size / 2) (nth combined (size / 2));
   check_int "deep concat last" (size - 1) (peek_back combined);
   check_int "deep concat sum" ((size * (size - 1)) / 2) (fold_left ( + ) 0 combined)
 
@@ -854,7 +892,7 @@ let test_repeated_chunk_concat_satisfies_relaxed_density () =
   in
   check_invariants "repeated chunk concat" combined;
   check_int "repeated chunk concat length" size (length combined);
-  check_int "repeated chunk concat first" 0 (get combined 0);
+  check_int "repeated chunk concat first" 0 (nth combined 0);
   check_int "repeated chunk concat last" (size - 1) (peek_back combined);
   check_int "repeated chunk concat sum" ((size * (size - 1)) / 2)
     (fold_left ( + ) 0 combined)
@@ -953,8 +991,8 @@ let test_regular_builds_omit_size_tables () =
   check_invariants "regular push_back" pushed;
   check_int "of_array size tables" 0 (regular_size_table_count from_array);
   check_int "push_back size tables" 0 (regular_size_table_count pushed);
-  check_int "of_array radix get" 12_345 (get from_array 12_345);
-  check_int "push_back radix get" 12_345 (get pushed 12_345)
+  check_int "of_array radix nth" 12_345 (nth from_array 12_345);
+  check_int "push_back radix nth" 12_345 (nth pushed 12_345)
 
 let push_back_range start count values =
   let rec loop i acc =
@@ -1151,7 +1189,7 @@ let test_conversions_and_map () =
   check_array "of_array copies input" [| 1; 2; 3 |] (to_array v);
   let exported = to_array v in
   exported.(2) <- 77;
-  check_int "to_array copies output" 3 (get v 2);
+  check_int "to_array copies output" 3 (nth v 2);
   let mapped = map string_of_int v in
   check_string_list "map type change" [ "1"; "2"; "3" ] (to_list mapped);
   check_list "append_list" (range 70)
@@ -1187,6 +1225,8 @@ let () =
           test_case "size_table_lookup_starts_from_radix_slot"
             test_size_table_lookup_starts_from_radix_slot;
           test_case "push_get_and_persistence" test_push_get_and_persistence;
+          test_case "nth_tail_read_allocation_does_not_allocate_options"
+            test_nth_tail_read_allocation_does_not_allocate_options;
           test_case "set_pop_and_peek" test_set_pop_and_peek;
           test_case "front_and_back_operations" test_front_and_back_operations;
           test_case "pop_back_head_only_vector"

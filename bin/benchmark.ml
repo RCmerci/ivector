@@ -87,10 +87,27 @@ let check_rrbvec_invariants name values =
       (Printf.sprintf "%s: Rrbvec invariant failure: %s" name
          (Printexc.to_string exn))
 
+let rrbvec_nth values index = Rrbvec.nth values index
+
+let rrbvec_pop_back values =
+  match Rrbvec.pop_back values with
+  | Some result -> result
+  | None -> invalid_arg "Rrbvec.pop_back returned None"
+
+let rrbvec_pop_front values =
+  match Rrbvec.pop_front values with
+  | Some result -> result
+  | None -> invalid_arg "Rrbvec.pop_front returned None"
+
+let rrbvec_subvec values start stop =
+  match Rrbvec.subvec values start stop with
+  | Some values -> values
+  | None -> invalid_arg "Rrbvec.subvec returned None"
+
 let batvect_sub values start length = BatVect.sub values start length
 
 let rrbvec_random_sum values indices =
-  Array.fold_left (fun acc index -> acc + Rrbvec.get values index) 0 indices
+  Array.fold_left (fun acc index -> acc + rrbvec_nth values index) 0 indices
 
 let batvect_random_sum values indices =
   Array.fold_left (fun acc index -> acc + BatVect.get values index) 0 indices
@@ -155,13 +172,13 @@ let build_batvect_front size =
 
 let pop_back_rrbvec values =
   let rec loop values =
-    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_back values))
+    if Rrbvec.is_empty values then values else loop (snd (rrbvec_pop_back values))
   in
   loop values
 
 let pop_front_rrbvec values =
   let rec loop values =
-    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_front values))
+    if Rrbvec.is_empty values then values else loop (snd (rrbvec_pop_front values))
   in
   loop values
 
@@ -182,7 +199,7 @@ let repeated_rrbvec_subvec steps values =
     if steps = 0 then values
     else
       let length = Rrbvec.length values in
-      loop (steps - 1) (Rrbvec.subvec values 1 (length - 1))
+      loop (steps - 1) (rrbvec_subvec values 1 (length - 1))
   in
   loop steps values
 
@@ -200,7 +217,8 @@ let push_pop_rrbvec size =
     if i = size then values else push_loop (i + 1) (Rrbvec.push_back values i)
   in
   let rec pop_loop values =
-    if Rrbvec.is_empty values then values else pop_loop (snd (Rrbvec.pop_back values))
+    if Rrbvec.is_empty values then values
+    else pop_loop (snd (rrbvec_pop_back values))
   in
   pop_loop (push_loop 0 Rrbvec.empty)
 
@@ -291,10 +309,14 @@ let verify_subvec_concat config values =
   let subvec_steps = min 8 ((config.size - 1) / 2) in
   let final_length = config.size - (2 * subvec_steps) in
   let expected_subvec_sum = range_sum subvec_steps final_length in
-  let rrbvec_subvec = repeated_rrbvec_subvec subvec_steps values.rrbvec in
-  check_rrbvec_invariants "Rrbvec repeated subvec" rrbvec_subvec;
-  check "Rrbvec repeated subvec length" final_length (Rrbvec.length rrbvec_subvec);
-  check "Rrbvec repeated subvec sum" expected_subvec_sum (sum_rrbvec rrbvec_subvec);
+  let rrbvec_repeated_subvec =
+    repeated_rrbvec_subvec subvec_steps values.rrbvec
+  in
+  check_rrbvec_invariants "Rrbvec repeated subvec" rrbvec_repeated_subvec;
+  check "Rrbvec repeated subvec length" final_length
+    (Rrbvec.length rrbvec_repeated_subvec);
+  check "Rrbvec repeated subvec sum" expected_subvec_sum
+    (sum_rrbvec rrbvec_repeated_subvec);
   let batvect_subvec = repeated_batvect_subvec subvec_steps values.batvect in
   check "BatVect repeated subvec length" final_length (BatVect.length batvect_subvec);
   check "BatVect repeated subvec sum" expected_subvec_sum (sum_batvect batvect_subvec);
@@ -303,7 +325,8 @@ let verify_subvec_concat config values =
   let expected_concat_sum = range_sum 0 config.size in
   let rrbvec_concat =
     bounds
-    |> List.map (fun (start, length) -> Rrbvec.subvec values.rrbvec start (start + length))
+    |> List.map (fun (start, length) ->
+           rrbvec_subvec values.rrbvec start (start + length))
     |> concat_nonempty Rrbvec.concat
   in
   check_rrbvec_invariants "Rrbvec repeated concat" rrbvec_concat;
@@ -390,17 +413,33 @@ let benchmark_groups config values =
       name = "Subvec and concat";
       cases =
         [
-          { name = "Rrbvec repeated subvec"; run = (fun () -> ignore (Sys.opaque_identity (repeated_rrbvec_subvec subvec_steps values.rrbvec))) };
-          { name = "BatVect repeated subvec"; run = (fun () -> ignore (Sys.opaque_identity (repeated_batvect_subvec subvec_steps values.batvect))) };
           {
-            name = "Rrbvec repeated concat";
+            name = "Rrbvec repeated subvec";
             run =
               (fun () ->
                 ignore
                   (Sys.opaque_identity
-                     (bounds
-                     |> List.map (fun (start, length) -> Rrbvec.subvec values.rrbvec start (start + length))
-                     |> concat_nonempty Rrbvec.concat)));
+                     (repeated_rrbvec_subvec subvec_steps values.rrbvec)));
+          };
+          {
+            name = "BatVect repeated subvec";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (repeated_batvect_subvec subvec_steps values.batvect)));
+          };
+          {
+            name = "Rrbvec repeated concat";
+            run =
+              (fun () ->
+                let result =
+                  bounds
+                  |> List.map (fun (start, length) ->
+                         rrbvec_subvec values.rrbvec start (start + length))
+                  |> concat_nonempty Rrbvec.concat
+                in
+                ignore (Sys.opaque_identity result));
           };
           {
             name = "BatVect repeated concat";

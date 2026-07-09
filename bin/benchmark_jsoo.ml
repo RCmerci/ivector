@@ -21,9 +21,26 @@ let sum values = Rrbvec.fold_left ( + ) 0 values
 
 let fold_ignore values = Rrbvec.fold_left (fun _ value -> value) 0 values
 
+let nth values index = Rrbvec.nth values index
+
+let subvec values start stop =
+  match Rrbvec.subvec values start stop with
+  | Some values -> values
+  | None -> invalid_arg "Rrbvec.subvec returned None"
+
+let pop_back values =
+  match Rrbvec.pop_back values with
+  | Some result -> result
+  | None -> invalid_arg "Rrbvec.pop_back returned None"
+
+let pop_front values =
+  match Rrbvec.pop_front values with
+  | Some result -> result
+  | None -> invalid_arg "Rrbvec.pop_front returned None"
+
 let random_read values count =
   let indices = make_indices count (Rrbvec.length values) in
-  Array.fold_left (fun acc index -> acc + Rrbvec.get values index) 0 indices
+  Array.fold_left (fun acc index -> acc + nth values index) 0 indices
 
 let random_write values count =
   let indices = make_indices count (Rrbvec.length values) in
@@ -40,7 +57,7 @@ let repeated_subvec values steps =
     if steps = 0 then values
     else
       let length = Rrbvec.length values in
-      loop (steps - 1) (Rrbvec.subvec values 1 (length - 1))
+      loop (steps - 1) (subvec values 1 (length - 1))
   in
   loop steps values
 
@@ -55,7 +72,7 @@ let chunk_bounds size chunks =
 let build_chunks values chunks =
   let bounds = chunk_bounds (Rrbvec.length values) chunks in
   Array.map
-    (fun (start, length) -> Rrbvec.subvec values start (start + length))
+    (fun (start, length) -> subvec values start (start + length))
     bounds
 
 let concat_built_chunks chunks =
@@ -69,23 +86,23 @@ let concat_built_chunks chunks =
 let concat_chunks values chunks =
   let bounds = chunk_bounds (Rrbvec.length values) chunks in
   let first_start, first_length = Array.unsafe_get bounds 0 in
-  let first = Rrbvec.subvec values first_start (first_start + first_length) in
+  let first = subvec values first_start (first_start + first_length) in
   let result = ref first in
   for i = 1 to Array.length bounds - 1 do
     let start, length = Array.unsafe_get bounds i in
-    result := Rrbvec.concat !result (Rrbvec.subvec values start (start + length))
+    result := Rrbvec.concat !result (subvec values start (start + length))
   done;
   !result
 
 let pop_back_all values =
   let rec loop values =
-    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_back values))
+    if Rrbvec.is_empty values then values else loop (snd (pop_back values))
   in
   loop values
 
 let pop_front_all values =
   let rec loop values =
-    if Rrbvec.is_empty values then values else loop (snd (Rrbvec.pop_front values))
+    if Rrbvec.is_empty values then values else loop (snd (pop_front values))
   in
   loop values
 

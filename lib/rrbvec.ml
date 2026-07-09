@@ -710,7 +710,7 @@ let rec get_node node index =
         (Array.unsafe_get branch.children child_index)
         (index - previous_size)
 
-let get v index =
+let nth v index =
   match v with
   | Empty_vector -> invalid_index ()
   | Vector v ->
@@ -720,6 +720,18 @@ let get v index =
       else if index >= v.tailoff then
         Array.unsafe_get v.tail (index - v.tailoff)
       else get_node v.root (index - head_length)
+
+let nth_opt v index =
+  match v with
+  | Empty_vector -> None
+  | Vector v ->
+      if index < 0 || index >= v.count then None
+      else
+        let head_length = Array.length v.head in
+        if index < head_length then Some (Array.unsafe_get v.head index)
+        else if index >= v.tailoff then
+          Some (Array.unsafe_get v.tail (index - v.tailoff))
+        else Some (get_node v.root (index - head_length))
 
 let rec set_node node index value =
   match node with
@@ -783,14 +795,15 @@ let set v index value =
 
 let peek_back_impl v =
   match v with
-  | Empty_vector -> invalid_index ()
+  | Empty_vector -> None
   | Vector v ->
-      let tail_length = Array.length v.tail in
-      if tail_length > 0 then Array.unsafe_get v.tail (tail_length - 1)
-      else if v.root <> Empty then get_node v.root (node_count v.root - 1)
-      else
-        let head_length = Array.length v.head in
-        Array.unsafe_get v.head (head_length - 1)
+      Some
+        (let tail_length = Array.length v.tail in
+         if tail_length > 0 then Array.unsafe_get v.tail (tail_length - 1)
+         else if v.root <> Empty then get_node v.root (node_count v.root - 1)
+         else
+           let head_length = Array.length v.head in
+           Array.unsafe_get v.head (head_length - 1))
 
 let pull_tail_from_root root =
   let tail, root = take_last_leaf_node root in
@@ -897,23 +910,53 @@ let push_front v value =
 
 let pop_back v =
   match v with
-  | Empty_vector -> invalid_index ()
+  | Empty_vector -> None
   | Vector v ->
-      let tail_length = Array.length v.tail in
-      if tail_length > 0 then
-        let value = Array.unsafe_get v.tail (tail_length - 1) in
-        if tail_length > 1 then
-          ( value,
-            Vector
-              {
-                v with
-                count = v.count - 1;
-                tail = Array.sub v.tail 0 (tail_length - 1);
-              } )
+      let result =
+        let tail_length = Array.length v.tail in
+        if tail_length > 0 then
+          let value = Array.unsafe_get v.tail (tail_length - 1) in
+          if tail_length > 1 then
+            ( value,
+              Vector
+                {
+                  v with
+                  count = v.count - 1;
+                  tail = Array.sub v.tail 0 (tail_length - 1);
+                } )
+          else if v.root = Empty then
+            (value, vector_or_empty { v with count = v.count - 1; tail = [||] })
+          else
+            let root, tail = pull_tail_from_root v.root in
+            ( value,
+              vector_or_empty
+                {
+                  count = v.count - 1;
+                  root;
+                  tail;
+                  tailoff = Array.length v.head + node_count root;
+                  head = v.head;
+                } )
         else if v.root = Empty then
-          (value, vector_or_empty { v with count = v.count - 1; tail = [||] })
+          let head_length = Array.length v.head in
+          let value = Array.unsafe_get v.head (head_length - 1) in
+          if head_length = 1 then (value, empty)
+          else
+            ( value,
+              Vector
+                {
+                  v with
+                  count = v.count - 1;
+                  head = Array.sub v.head 0 (head_length - 1);
+                  tailoff = v.tailoff - 1;
+                } )
         else
-          let root, tail = pull_tail_from_root v.root in
+          let leaf, root = take_last_leaf_node v.root in
+          let leaf_length = Array.length leaf in
+          let value = Array.unsafe_get leaf (leaf_length - 1) in
+          let root = Option.value root ~default:Empty in
+          let tail = Array.sub leaf 0 (leaf_length - 1) in
+          let root, tail = refill_tail_if_empty root tail in
           ( value,
             vector_or_empty
               {
@@ -923,45 +966,19 @@ let pop_back v =
                 tailoff = Array.length v.head + node_count root;
                 head = v.head;
               } )
-      else if v.root = Empty then
-        let head_length = Array.length v.head in
-        let value = Array.unsafe_get v.head (head_length - 1) in
-        if head_length = 1 then (value, empty)
-        else
-          ( value,
-            Vector
-              {
-                v with
-                count = v.count - 1;
-                head = Array.sub v.head 0 (head_length - 1);
-                tailoff = v.tailoff - 1;
-              } )
-      else
-        let leaf, root = take_last_leaf_node v.root in
-        let leaf_length = Array.length leaf in
-        let value = Array.unsafe_get leaf (leaf_length - 1) in
-        let root = Option.value root ~default:Empty in
-        let tail = Array.sub leaf 0 (leaf_length - 1) in
-        let root, tail = refill_tail_if_empty root tail in
-        ( value,
-          vector_or_empty
-            {
-              count = v.count - 1;
-              root;
-              tail;
-              tailoff = Array.length v.head + node_count root;
-              head = v.head;
-            } )
+      in
+      Some result
 
 let peek_back = peek_back_impl
 
 let peek_front v =
   match v with
-  | Empty_vector -> invalid_index ()
+  | Empty_vector -> None
   | Vector v ->
-      if Array.length v.head > 0 then Array.unsafe_get v.head 0
-      else if v.root <> Empty then get_node v.root 0
-      else Array.unsafe_get v.tail 0
+      Some
+        (if Array.length v.head > 0 then Array.unsafe_get v.head 0
+         else if v.root <> Empty then get_node v.root 0
+         else Array.unsafe_get v.tail 0)
 
 let append = concat
 
@@ -972,7 +989,8 @@ let to_array v =
   match v with
   | Empty_vector -> [||]
   | Vector header ->
-      let values = Array.make header.count (get v 0) in
+      let first = nth v 0 in
+      let values = Array.make header.count first in
       let position = ref 0 in
       fold_left
         (fun () value ->
@@ -1116,59 +1134,66 @@ let rec compact_root = function
 let subvec v start stop =
   match v with
   | Empty_vector ->
-      if start = 0 && stop = 0 then empty else invalid_index ()
+      if start = 0 && stop = 0 then Some empty else None
   | Vector v ->
-      if start < 0 || stop < start || stop > v.count then invalid_index ();
-      let count = stop - start in
-      if count = 0 then empty
+      if start < 0 || stop < start || stop > v.count then None
       else
-        let head_length = Array.length v.head in
-        let root_start = head_length in
-        let root_stop = v.tailoff in
-        let node = ref Empty in
-        if start < head_length then
-          (node :=
-             concat_array_slice !node v.head start (min stop head_length));
-        if start < root_stop && stop > root_start then (
-          let slice_start = max start root_start - root_start in
-          let slice_stop = min stop root_stop - root_start in
-          node :=
-            concat_node_slice !node (slice_node v.root slice_start slice_stop));
-        if stop > v.tailoff then
-          (node :=
-             concat_array_slice !node v.tail (max start v.tailoff - v.tailoff)
-               (stop - v.tailoff));
-        make_vector (compact_root !node)
+        let count = stop - start in
+        if count = 0 then Some empty
+        else
+          let head_length = Array.length v.head in
+          let root_start = head_length in
+          let root_stop = v.tailoff in
+          let node = ref Empty in
+          if start < head_length then
+            node := concat_array_slice !node v.head start (min stop head_length);
+          if start < root_stop && stop > root_start then (
+            let slice_start = max start root_start - root_start in
+            let slice_stop = min stop root_stop - root_start in
+            node :=
+              concat_node_slice !node (slice_node v.root slice_start slice_stop));
+          if stop > v.tailoff then
+            node :=
+              concat_array_slice !node v.tail
+                (max start v.tailoff - v.tailoff)
+                (stop - v.tailoff);
+          Some (make_vector (compact_root !node))
 
 let pop_front v =
   match v with
-  | Empty_vector -> invalid_index ()
+  | Empty_vector -> None
   | Vector v ->
-      let head_length = Array.length v.head in
-      if head_length > 0 then
-        let value = Array.unsafe_get v.head 0 in
-        let head = Array.sub v.head 1 (head_length - 1) in
-        ( value,
-          vector_or_empty
-            { v with count = v.count - 1; head; tailoff = v.tailoff - 1 } )
-      else if v.root <> Empty then
-        let leaf = first_leaf_node v.root in
-        let value = Array.unsafe_get leaf 0 in
-        let head = Array.sub leaf 1 (Array.length leaf - 1) in
-        let root = remove_first_leaf_node v.root |> Option.value ~default:Empty in
-        ( value,
-          vector_or_empty
-            {
-              count = v.count - 1;
-              root;
-              tail = v.tail;
-              tailoff = Array.length head + node_count root;
-              head;
-            } )
-      else
-        let value = Array.unsafe_get v.tail 0 in
-        let tail = Array.sub v.tail 1 (Array.length v.tail - 1) in
-        (value, vector_or_empty { v with count = v.count - 1; tail; tailoff = 0 })
+      let result =
+        let head_length = Array.length v.head in
+        if head_length > 0 then
+          let value = Array.unsafe_get v.head 0 in
+          let head = Array.sub v.head 1 (head_length - 1) in
+          ( value,
+            vector_or_empty
+              { v with count = v.count - 1; head; tailoff = v.tailoff - 1 } )
+        else if v.root <> Empty then
+          let leaf = first_leaf_node v.root in
+          let value = Array.unsafe_get leaf 0 in
+          let head = Array.sub leaf 1 (Array.length leaf - 1) in
+          let root =
+            remove_first_leaf_node v.root |> Option.value ~default:Empty
+          in
+          ( value,
+            vector_or_empty
+              {
+                count = v.count - 1;
+                root;
+                tail = v.tail;
+                tailoff = Array.length head + node_count root;
+                head;
+              } )
+        else
+          let value = Array.unsafe_get v.tail 0 in
+          let tail = Array.sub v.tail 1 (Array.length v.tail - 1) in
+          ( value,
+            vector_or_empty { v with count = v.count - 1; tail; tailoff = 0 } )
+      in
+      Some result
 
 let rec map_node f = function
   | Empty -> Empty
