@@ -1,6 +1,11 @@
 (test
  (name test_rrbvec)
  (modules test_rrbvec)
+ (libraries rrbvec alcotest))
+
+(test
+ (name test_qcheck)
+ (modules test_qcheck)
  (libraries rrbvec alcotest qcheck-core qcheck-alcotest))
 
 (test
