@@ -146,7 +146,7 @@ val sort_uniq : ('a -> 'a -> int) -> 'a t -> 'a t
 (** Partition values by [p], preserving order in both returned vectors. *)
 val partition : ('a -> bool) -> 'a t -> 'a t * 'a t
 
-(** Return the half-open slice [[start], [stop]) as a vector. Returns [None]
+(** Return the half-open slice \[[start], [stop]) as a vector. Returns [None]
     when [start] is negative, [stop] is less than [start], or [stop] is greater
     than [length v]. *)
 val subvec : 'a t -> int -> int -> 'a t option
