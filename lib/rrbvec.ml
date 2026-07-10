@@ -97,6 +97,8 @@ let make_with_edges head root tail =
         head;
       }
 
+let singleton value = make_with_edges [||] Empty [| value |]
+
 let capacities =
   let rec loop capacity acc =
     let acc = capacity :: acc in
@@ -793,17 +795,13 @@ let set v index value =
           (set_node v.root (index - head_length) value)
           v.tail
 
-let peek_back_impl v =
-  match v with
-  | Empty_vector -> None
-  | Vector v ->
-      Some
-        (let tail_length = Array.length v.tail in
-         if tail_length > 0 then Array.unsafe_get v.tail (tail_length - 1)
-         else if v.root <> Empty then get_node v.root (node_count v.root - 1)
-         else
-           let head_length = Array.length v.head in
-           Array.unsafe_get v.head (head_length - 1))
+let peek_back_vector v =
+  let tail_length = Array.length v.tail in
+  if tail_length > 0 then Array.unsafe_get v.tail (tail_length - 1)
+  else if v.root <> Empty then get_node v.root (node_count v.root - 1)
+  else
+    let head_length = Array.length v.head in
+    Array.unsafe_get v.head (head_length - 1)
 
 let pull_tail_from_root root =
   let tail, root = take_last_leaf_node root in
@@ -969,16 +967,26 @@ let pop_back v =
       in
       Some result
 
-let peek_back = peek_back_impl
+let peek_back = function
+  | Empty_vector -> invalid_arg "empty vector"
+  | Vector v -> peek_back_vector v
 
-let peek_front v =
-  match v with
+let peek_back_opt = function
   | Empty_vector -> None
-  | Vector v ->
-      Some
-        (if Array.length v.head > 0 then Array.unsafe_get v.head 0
-         else if v.root <> Empty then get_node v.root 0
-         else Array.unsafe_get v.tail 0)
+  | Vector v -> Some (peek_back_vector v)
+
+let peek_front_vector v =
+  if Array.length v.head > 0 then Array.unsafe_get v.head 0
+  else if v.root <> Empty then get_node v.root 0
+  else Array.unsafe_get v.tail 0
+
+let peek_front = function
+  | Empty_vector -> invalid_arg "empty vector"
+  | Vector v -> peek_front_vector v
+
+let peek_front_opt = function
+  | Empty_vector -> None
+  | Vector v -> Some (peek_front_vector v)
 
 let append = concat
 
@@ -1027,19 +1035,38 @@ let root_of_full_chunks_rev chunks_rev =
       fill (leaf_count - 1) chunks_rev;
       build_level leaves
 
+let finish_nonempty_chunks chunks_rev chunk chunk_length =
+  let tail =
+    if chunk_length = width then chunk else Array.sub chunk 0 chunk_length
+  in
+  make_with_edges [||] (root_of_full_chunks_rev chunks_rev) tail
+
 let of_list values =
   match values with
   | [] -> empty
   | first :: rest ->
       let first_chunk = Array.make width first in
       let rec loop chunks_rev chunk chunk_length = function
-        | [] ->
-            let tail =
-              if chunk_length = width then chunk
-              else Array.sub chunk 0 chunk_length
-            in
-            make_with_edges [||] (root_of_full_chunks_rev chunks_rev) tail
+        | [] -> finish_nonempty_chunks chunks_rev chunk chunk_length
         | value :: rest ->
+            if chunk_length = width then
+              let next_chunk = Array.make width value in
+              loop (chunk :: chunks_rev) next_chunk 1 rest
+            else (
+              Array.unsafe_set chunk chunk_length value;
+              loop chunks_rev chunk (chunk_length + 1) rest)
+      in
+      loop [] first_chunk 1 rest
+
+let of_seq values =
+  match values () with
+  | Seq.Nil -> empty
+  | Seq.Cons (first, rest) ->
+      let first_chunk = Array.make width first in
+      let rec loop chunks_rev chunk chunk_length values =
+        match values () with
+        | Seq.Nil -> finish_nonempty_chunks chunks_rev chunk chunk_length
+        | Seq.Cons (value, rest) ->
             if chunk_length = width then
               let next_chunk = Array.make width value in
               loop (chunk :: chunks_rev) next_chunk 1 rest
@@ -1235,6 +1262,50 @@ let prepend_array v values =
   if Array.length values = 0 then v else prepend (of_array values) v
 
 let to_list v = fold_right (fun value acc -> value :: acc) v []
+
+type 'a seq_frame = {
+  seq_children : 'a node array;
+  seq_next_child : int;
+}
+
+let rec seq_array values index rest () =
+  if index = Array.length values then rest ()
+  else
+    Seq.Cons
+      (Array.unsafe_get values index, seq_array values (index + 1) rest)
+
+and seq_node node stack tail () =
+  match node with
+  | Empty -> seq_stack stack tail ()
+  | Leaf values -> seq_array values 0 (seq_stack stack tail) ()
+  | Branch branch ->
+      let children = branch.children in
+      let length = Array.length children in
+      if length = 0 then seq_stack stack tail ()
+      else
+        let stack =
+          if length = 1 then stack
+          else { seq_children = children; seq_next_child = 1 } :: stack
+        in
+        seq_node (Array.unsafe_get children 0) stack tail ()
+
+and seq_stack stack tail () =
+  match stack with
+  | [] -> seq_array tail 0 Seq.empty ()
+  | frame :: rest ->
+      let child =
+        Array.unsafe_get frame.seq_children frame.seq_next_child
+      in
+      let seq_next_child = frame.seq_next_child + 1 in
+      let stack =
+        if seq_next_child = Array.length frame.seq_children then rest
+        else { frame with seq_next_child } :: rest
+      in
+      seq_node child stack tail ()
+
+let to_seq = function
+  | Empty_vector -> Seq.empty
+  | Vector v -> seq_array v.head 0 (seq_node v.root [] v.tail)
 
 let reverse_array values =
   let length = Array.length values in
@@ -1520,98 +1591,89 @@ let sort compare v = of_list (List.sort compare (to_list v))
 
 let sort_uniq compare v = of_list (List.sort_uniq compare (to_list v))
 
-type 'a chunk_builder = {
-  mutable chunks_rev : 'a array list;
-  mutable chunk : 'a array option;
-  mutable chunk_length : int;
-  mutable chunk_count : int;
+type 'a chunk_sink = {
+  mutable sink_chunks_rev : 'a array list;
+  mutable sink_chunk : 'a array option;
+  mutable sink_chunk_length : int;
 }
 
-let create_chunk_builder () =
-  { chunks_rev = []; chunk = None; chunk_length = 0; chunk_count = 0 }
+let create_chunk_sink () =
+  { sink_chunks_rev = []; sink_chunk = None; sink_chunk_length = 0 }
 
-let chunk_builder_add builder value =
-  builder.chunk_count <- builder.chunk_count + 1;
-  match builder.chunk with
+let chunk_sink_add sink value =
+  match sink.sink_chunk with
   | None ->
-      builder.chunk <- Some (Array.make width value);
-      builder.chunk_length <- 1
-  | Some chunk when builder.chunk_length = width ->
-      builder.chunks_rev <- chunk :: builder.chunks_rev;
-      builder.chunk <- Some (Array.make width value);
-      builder.chunk_length <- 1
+      sink.sink_chunk <- Some (Array.make width value);
+      sink.sink_chunk_length <- 1
+  | Some chunk when sink.sink_chunk_length = width ->
+      sink.sink_chunks_rev <- chunk :: sink.sink_chunks_rev;
+      sink.sink_chunk <- Some (Array.make width value);
+      sink.sink_chunk_length <- 1
   | Some chunk ->
-      Array.unsafe_set chunk builder.chunk_length value;
-      builder.chunk_length <- builder.chunk_length + 1
+      Array.unsafe_set chunk sink.sink_chunk_length value;
+      sink.sink_chunk_length <- sink.sink_chunk_length + 1
 
-let chunk_builder_result builder =
-  if builder.chunk_count = 0 then empty
-  else
-    let tail =
-      match builder.chunk with
-      | None -> [||]
-      | Some chunk ->
-          if builder.chunk_length = width then chunk
-          else Array.sub chunk 0 builder.chunk_length
-    in
-    make_with_edges [||] (root_of_full_chunks_rev builder.chunks_rev) tail
+let chunk_sink_result sink =
+  match sink.sink_chunk with
+  | None -> empty
+  | Some chunk ->
+      finish_nonempty_chunks sink.sink_chunks_rev chunk sink.sink_chunk_length
 
-let filter_array p builder values =
+let filter_array p sink values =
   for index = 0 to Array.length values - 1 do
     let value = Array.unsafe_get values index in
-    if p value then chunk_builder_add builder value
+    if p value then chunk_sink_add sink value
   done
 
-let rec filter_node p builder = function
+let rec filter_node p sink = function
   | Empty -> ()
-  | Leaf values -> filter_array p builder values
+  | Leaf values -> filter_array p sink values
   | Branch branch ->
       let children = branch.children in
       for index = 0 to Array.length children - 1 do
-        filter_node p builder (Array.unsafe_get children index)
+        filter_node p sink (Array.unsafe_get children index)
       done
 
 let filter p v =
   match v with
   | Empty_vector -> empty
   | Vector v ->
-      let builder = create_chunk_builder () in
-      filter_array p builder v.head;
-      filter_node p builder v.root;
-      filter_array p builder v.tail;
-      chunk_builder_result builder
+      let sink = create_chunk_sink () in
+      filter_array p sink v.head;
+      filter_node p sink v.root;
+      filter_array p sink v.tail;
+      chunk_sink_result sink
 
-let filter_map_array f builder values =
+let filter_map_array f sink values =
   for index = 0 to Array.length values - 1 do
     match f (Array.unsafe_get values index) with
     | None -> ()
-    | Some value -> chunk_builder_add builder value
+    | Some value -> chunk_sink_add sink value
   done
 
-let rec filter_map_node f builder = function
+let rec filter_map_node f sink = function
   | Empty -> ()
-  | Leaf values -> filter_map_array f builder values
+  | Leaf values -> filter_map_array f sink values
   | Branch branch ->
       let children = branch.children in
       for index = 0 to Array.length children - 1 do
-        filter_map_node f builder (Array.unsafe_get children index)
+        filter_map_node f sink (Array.unsafe_get children index)
       done
 
 let filter_map f v =
   match v with
   | Empty_vector -> empty
   | Vector v ->
-      let builder = create_chunk_builder () in
-      filter_map_array f builder v.head;
-      filter_map_node f builder v.root;
-      filter_map_array f builder v.tail;
-      chunk_builder_result builder
+      let sink = create_chunk_sink () in
+      filter_map_array f sink v.head;
+      filter_map_node f sink v.root;
+      filter_map_array f sink v.tail;
+      chunk_sink_result sink
 
 let partition_array p left right values =
   for index = 0 to Array.length values - 1 do
     let value = Array.unsafe_get values index in
-    if p value then chunk_builder_add left value
-    else chunk_builder_add right value
+    if p value then chunk_sink_add left value else chunk_sink_add right value
   done
 
 let rec partition_node p left right = function
@@ -1627,12 +1689,12 @@ let partition p v =
   match v with
   | Empty_vector -> (empty, empty)
   | Vector v ->
-      let left = create_chunk_builder () in
-      let right = create_chunk_builder () in
+      let left = create_chunk_sink () in
+      let right = create_chunk_sink () in
       partition_array p left right v.head;
       partition_node p left right v.root;
       partition_array p left right v.tail;
-      (chunk_builder_result left, chunk_builder_result right)
+      (chunk_sink_result left, chunk_sink_result right)
 
 (*
   Internal invariants checked by [invariants]:

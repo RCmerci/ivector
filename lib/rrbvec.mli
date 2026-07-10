@@ -3,6 +3,9 @@ type 'a t
 (** The empty vector. *)
 val empty : 'a t
 
+(** Return a vector containing only [value]. *)
+val singleton : 'a -> 'a t
+
 (** Return the number of values in the vector. *)
 val length : 'a t -> int
 
@@ -39,13 +42,23 @@ val pop_back : 'a t -> ('a * 'a t) option
     remaining vector. Returns [None] when the vector is empty. *)
 val pop_front : 'a t -> ('a * 'a t) option
 
+(** Return the value at the front of the vector.
+
+    Raises [Invalid_argument] when the vector is empty. *)
+val peek_front : 'a t -> 'a
+
 (** Return the value at the front of the vector, or [None] when the vector is
     empty. *)
-val peek_front : 'a t -> 'a option
+val peek_front_opt : 'a t -> 'a option
+
+(** Return the value at the back of the vector.
+
+    Raises [Invalid_argument] when the vector is empty. *)
+val peek_back : 'a t -> 'a
 
 (** Return the value at the back of the vector, or [None] when the vector is
     empty. *)
-val peek_back : 'a t -> 'a option
+val peek_back_opt : 'a t -> 'a option
 
 (** Concatenate two vectors. *)
 val append : 'a t -> 'a t -> 'a t
@@ -159,6 +172,12 @@ val of_list : 'a list -> 'a t
 
 (** Return the vector values as a list in order. *)
 val to_list : 'a t -> 'a list
+
+(** Build a vector containing the sequence values in order. *)
+val of_seq : 'a Seq.t -> 'a t
+
+(** Return the vector values as a lazy sequence in order. *)
+val to_seq : 'a t -> 'a Seq.t
 
 (** Build a vector containing the array values in order. The input array is
     copied as needed; later mutations to the array do not affect the vector. *)

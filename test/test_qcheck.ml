@@ -29,8 +29,8 @@ let expect_none name = function
 let nth values index = Rrbvec.nth values index
 let pop_back values = expect_some "pop_back" (Rrbvec.pop_back values)
 let pop_front values = expect_some "pop_front" (Rrbvec.pop_front values)
-let peek_front values = expect_some "peek_front" (Rrbvec.peek_front values)
-let peek_back values = expect_some "peek_back" (Rrbvec.peek_back values)
+let peek_front values = Rrbvec.peek_front values
+let peek_back values = Rrbvec.peek_back values
 
 let subvec values start stop =
   expect_some "subvec" (Rrbvec.subvec values start stop)
@@ -108,6 +108,7 @@ type operation =
   | Length
   | Is_empty
   | To_list
+  | To_seq
   | To_array
   | Fold_left_sum
   | Fold_right_cons
@@ -236,6 +237,7 @@ let string_of_operation = function
   | Length -> "Length"
   | Is_empty -> "Is_empty"
   | To_list -> "To_list"
+  | To_seq -> "To_seq"
   | To_array -> "To_array"
   | Fold_left_sum -> "Fold_left_sum"
   | Fold_right_cons -> "Fold_right_cons"
@@ -396,20 +398,31 @@ let apply_operation step values expected operation =
       end
     | Peek_back ->
         begin match expected with
-        | [] -> expect_none "property peek_back empty" (Rrbvec.peek_back values)
+        | [] ->
+            expect_none "property peek_back_opt empty"
+              (Rrbvec.peek_back_opt values);
+            check_raises_invalid_arg "property peek_back empty" (fun () ->
+                ignore (Rrbvec.peek_back values))
         | _ ->
             let expected_value = List.hd (List.rev expected) in
             check_int_result step operation "value" expected_value
-              (peek_back values)
+              (peek_back values);
+            check_int_option_result step operation "optional value"
+              (Some expected_value) (Rrbvec.peek_back_opt values)
         end;
         (values, expected)
     | Peek_front ->
         begin match expected with
         | [] ->
-            expect_none "property peek_front empty" (Rrbvec.peek_front values)
+            expect_none "property peek_front_opt empty"
+              (Rrbvec.peek_front_opt values);
+            check_raises_invalid_arg "property peek_front empty" (fun () ->
+                ignore (Rrbvec.peek_front values))
         | expected_value :: _ ->
             check_int_result step operation "value" expected_value
-              (peek_front values)
+              (peek_front values);
+            check_int_option_result step operation "optional value"
+              (Some expected_value) (Rrbvec.peek_front_opt values)
         end;
         (values, expected)
     | Length ->
@@ -423,6 +436,13 @@ let apply_operation step values expected operation =
     | To_list ->
         check_int_list_result step operation "to_list" expected
           (Rrbvec.to_list values);
+        (values, expected)
+    | To_seq ->
+        let sequence = Rrbvec.to_seq values in
+        check_int_list_result step operation "to_seq" expected
+          (List.of_seq sequence);
+        check_int_list_result step operation "to_seq repeated traversal" expected
+          (List.of_seq sequence);
         (values, expected)
     | To_array ->
         check_int_list_result step operation "to_array" expected
@@ -647,6 +667,7 @@ let operation_gen =
       (2, return Length);
       (2, return Is_empty);
       (2, return To_list);
+      (2, return To_seq);
       (2, return To_array);
       (2, return Fold_left_sum);
       (2, return Fold_right_cons);

@@ -44,9 +44,9 @@ let pop_back values = expect_some "pop_back" (Rrbvec.pop_back values)
 
 let pop_front values = expect_some "pop_front" (Rrbvec.pop_front values)
 
-let peek_front values = expect_some "peek_front" (Rrbvec.peek_front values)
+let peek_front values = Rrbvec.peek_front values
 
-let peek_back values = expect_some "peek_back" (Rrbvec.peek_back values)
+let peek_back values = Rrbvec.peek_back values
 
 let subvec values start stop =
   expect_some "subvec" (Rrbvec.subvec values start stop)
@@ -211,7 +211,12 @@ let test_empty () =
   expect_none "nth_opt empty" (Rrbvec.nth_opt v 0);
   expect_none "nth_opt negative" (Rrbvec.nth_opt v (-1));
   expect_none "pop empty" (Rrbvec.pop_back v);
-  expect_none "peek empty" (Rrbvec.peek_back v);
+  expect_none "peek_back_opt empty" (Rrbvec.peek_back_opt v);
+  expect_none "peek_front_opt empty" (Rrbvec.peek_front_opt v);
+  check_raises_invalid_arg "peek_back empty" (fun () ->
+      ignore (Rrbvec.peek_back v));
+  check_raises_invalid_arg "peek_front empty" (fun () ->
+      ignore (Rrbvec.peek_front v));
   expect_none "subvec empty past end" (Rrbvec.subvec v 0 1)
 
 let test_invariants_hold_for_public_operations () =
@@ -389,6 +394,23 @@ let test_nth_tail_read_allocation_does_not_allocate_options () =
   check "nth tail read sum is used" (!sum > 0);
   check_allocated_less_than "nth tail read allocation" 500_000. allocated
 
+let test_strict_peek_reads_do_not_allocate_options () =
+  let reads = 200_000 in
+  let values = singleton 42 in
+  let check_read name expected read =
+    Gc.compact ();
+    let before = Gc.allocated_bytes () in
+    let sum = ref 0 in
+    for _ = 1 to reads do
+      sum := !sum + read values
+    done;
+    let allocated = Gc.allocated_bytes () -. before in
+    check_int (name ^ " sum") (expected * reads) !sum;
+    check_allocated_less_than (name ^ " allocation") 500_000. allocated
+  in
+  check_read "peek_front" 42 Rrbvec.peek_front;
+  check_read "peek_back" 42 Rrbvec.peek_back
+
 let test_set_pop_and_peek () =
   let v0 = of_list (range 1050) in
   let v1 = set v0 10 10010 in
@@ -427,8 +449,107 @@ let test_front_and_back_operations () =
     (to_list (prepend_array (of_list [ 3; 4 ]) [| 1; 2 |]));
   expect_none "pop_front empty" (Rrbvec.pop_front empty);
   expect_none "pop_back empty" (Rrbvec.pop_back empty);
-  expect_none "peek_front empty" (Rrbvec.peek_front empty);
-  expect_none "peek_back empty" (Rrbvec.peek_back empty)
+  expect_none "peek_front_opt empty" (Rrbvec.peek_front_opt empty);
+  expect_none "peek_back_opt empty" (Rrbvec.peek_back_opt empty);
+  check_raises_invalid_arg "peek_front empty" (fun () ->
+      ignore (Rrbvec.peek_front empty));
+  check_raises_invalid_arg "peek_back empty" (fun () ->
+      ignore (Rrbvec.peek_back empty))
+
+let test_singleton_and_peek_apis () =
+  let one = singleton 42 in
+  check_invariants "singleton" one;
+  check_int "singleton length" 1 (length one);
+  check_list "singleton contents" [ 42 ] (to_list one);
+  check_int "singleton peek_front" 42 (Rrbvec.peek_front one);
+  check_int "singleton peek_back" 42 (Rrbvec.peek_back one);
+  Alcotest.(check (option int))
+    "singleton peek_front_opt" (Some 42) (Rrbvec.peek_front_opt one);
+  Alcotest.(check (option int))
+    "singleton peek_back_opt" (Some 42) (Rrbvec.peek_back_opt one);
+  let deep = of_list (range 1050) in
+  check_int "deep peek_front" 0 (Rrbvec.peek_front deep);
+  check_int "deep peek_back" 1049 (Rrbvec.peek_back deep);
+  Alcotest.(check (option int))
+    "deep peek_front_opt" (Some 0) (Rrbvec.peek_front_opt deep);
+  Alcotest.(check (option int))
+    "deep peek_back_opt" (Some 1049) (Rrbvec.peek_back_opt deep)
+
+let test_seq_conversions () =
+  let empty_from_seq = of_seq Seq.empty in
+  check_invariants "of_seq empty" empty_from_seq;
+  check "of_seq empty result" (is_empty empty_from_seq);
+  check_list "to_seq empty" [] (List.of_seq (to_seq empty));
+  let values = range 2049 in
+  let visited = ref [] in
+  let source =
+    values
+    |> List.to_seq
+    |> Seq.map (fun value ->
+           visited := value :: !visited;
+           value)
+  in
+  let vector = of_seq source in
+  check_invariants "of_seq" vector;
+  check_list "of_seq order" values (to_list vector);
+  check_list "of_seq visits once in order" values (List.rev !visited);
+  let sequence = to_seq vector in
+  check_list "to_seq order" values (List.of_seq sequence);
+  check_list "to_seq reusable" values (List.of_seq sequence);
+  let first_tail =
+    match sequence () with
+    | Seq.Nil -> Alcotest.fail "to_seq expected a first value"
+    | Seq.Cons (value, tail) ->
+        check_int "to_seq first value" 0 value;
+        tail
+  in
+  let check_second name =
+    match first_tail () with
+    | Seq.Nil -> Alcotest.failf "%s: expected a second value" name
+    | Seq.Cons (value, _) -> check_int name 1 value
+  in
+  check_second "to_seq persistent tail first read";
+  check_second "to_seq persistent tail second read";
+  let edged =
+    concat
+      (push_front (of_list (range 1100)) (-1))
+      (of_list (List.init 1100 (fun index -> index + 1100)))
+    |> fun vector -> subvec vector 17 2183
+  in
+  check_list "to_seq head root tail and relaxed nodes" (to_list edged)
+    (List.of_seq (to_seq edged));
+  List.iter
+    (fun size ->
+      let expected = range size in
+      let vector = of_seq (List.to_seq expected) in
+      check_invariants "of_seq chunk boundary" vector;
+      check_list "of_seq chunk boundary order" expected (to_list vector))
+    [ 0; 1; 31; 32; 33; 63; 64; 65; 1023; 1024; 1025 ];
+  let large_size = 100_000 in
+  let next_value = ref 0 in
+  let rec large_source () =
+    if !next_value = large_size then Seq.Nil
+    else
+      let value = !next_value in
+      incr next_value;
+      Seq.Cons (value, large_source)
+  in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let large = of_seq large_source in
+  let of_seq_allocated = Gc.allocated_bytes () -. before in
+  check_invariants "large of_seq" large;
+  check_int "large of_seq source consumed once" large_size !next_value;
+  check_int "large of_seq length" large_size (length large);
+  check_allocated_less_than "chunked of_seq allocation" 8_000_000.
+    of_seq_allocated;
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let sum = Seq.fold_left ( + ) 0 (to_seq large) in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int "large to_seq sum" ((large_size * (large_size - 1)) / 2) sum;
+  check_allocated_less_than "leaf-based to_seq allocation" 9_000_000.
+    allocated
 
 let test_pop_back_head_only_vector () =
   let values = push_front empty 42 in
@@ -933,7 +1054,7 @@ let test_to_list_large_allocation_avoids_intermediate_array () =
 let test_list_builders_avoid_full_intermediate_array () =
   let size = 100_000 in
   let values = List.init size Fun.id in
-  let check_builder name f =
+  let check_builder name allocation_limit f =
     Gc.compact ();
     let before = Gc.allocated_bytes () in
     let vector = f values in
@@ -942,11 +1063,11 @@ let test_list_builders_avoid_full_intermediate_array () =
     check_int (name ^ " length") size (length vector);
     check_int (name ^ " first") 0 (peek_front vector);
     check_int (name ^ " last") (size - 1) (peek_back vector);
-    check_allocated_less_than (name ^ " allocation") 1_700_000. allocated
+    check_allocated_less_than (name ^ " allocation") allocation_limit allocated
   in
-  check_builder "large of_list" of_list;
-  check_builder "large append_list" (append_list empty);
-  check_builder "large prepend_list" (prepend_list empty)
+  check_builder "large of_list" 1_030_000. of_list;
+  check_builder "large append_list" 1_700_000. (append_list empty);
+  check_builder "large prepend_list" 1_700_000. (prepend_list empty)
 
 let test_map_large_allocation_is_leaf_linear () =
   let size = 100_000 in
@@ -1020,8 +1141,11 @@ let () =
           test_case "push_get_and_persistence" test_push_get_and_persistence;
           test_case "nth_tail_read_allocation_does_not_allocate_options"
             test_nth_tail_read_allocation_does_not_allocate_options;
+          test_case "strict_peek_reads_do_not_allocate_options"
+            test_strict_peek_reads_do_not_allocate_options;
           test_case "set_pop_and_peek" test_set_pop_and_peek;
           test_case "front_and_back_operations" test_front_and_back_operations;
+          test_case "singleton_and_peek_apis" test_singleton_and_peek_apis;
           test_case "pop_back_head_only_vector"
             test_pop_back_head_only_vector;
           test_case "write_operations_keep_all_historical_versions_persistent"
@@ -1072,6 +1196,7 @@ let () =
       ( "conversion",
         [
           test_case "conversions_and_map" test_conversions_and_map;
+          test_case "seq_conversions" test_seq_conversions;
           test_case "fold_right_visits_values_in_order"
             test_fold_right_visits_values_in_order;
           test_case "fold_right_large_allocation_is_linear"
