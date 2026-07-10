@@ -126,6 +126,11 @@ let sum_batvect_iteri values =
   BatVect.iteri (fun index value -> sum := !sum + index + value) values;
   !sum
 
+let sum_rrbvec_iter2 left right =
+  let sum = ref 0 in
+  Rrbvec.iter2 (fun left right -> sum := !sum + left + right) left right;
+  !sum
+
 let filter_rrbvec values = Rrbvec.filter keep_value values
 let filter_batvect values = BatVect.filter keep_value values
 let filter_map_rrbvec values = Rrbvec.filter_map filter_map_value values
@@ -532,6 +537,90 @@ let public_api_benchmark_groups config values =
     paired_group "Public API/partition"
       (fun () -> ignore (Sys.opaque_identity (partition_rrbvec values.rrbvec)))
       (fun () -> ignore (Sys.opaque_identity (partition_batvect values.batvect)));
+    {
+      name = "Pairwise API";
+      cases =
+        [
+          {
+            name = "Rrbvec map2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.map2 ( + ) values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec combine";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.combine values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec iter2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (sum_rrbvec_iter2 values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec fold_left2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.fold_left2
+                        (fun acc left right -> acc + left + right)
+                        0 values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec for_all2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.for_all2 ( = ) values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec exists2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.exists2
+                        (fun left right -> left = last && right = last)
+                        values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec fold_right2";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.fold_right2
+                        (fun left right acc -> acc + left + right)
+                        values.rrbvec values.rrbvec 0)));
+          };
+          {
+            name = "Rrbvec equal";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.equal Int.equal values.rrbvec values.rrbvec)));
+          };
+          {
+            name = "Rrbvec compare";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (Rrbvec.compare Int.compare values.rrbvec values.rrbvec)));
+          };
+        ];
+    };
   ]
 
 let benchmark_groups config values =

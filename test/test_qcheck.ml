@@ -182,8 +182,8 @@ let apply_concat_mapper mapper value =
 
 let compare_for_order order =
   match order with
-  | Ascending -> compare
-  | Descending -> fun left right -> compare right left
+  | Ascending -> Stdlib.compare
+  | Descending -> fun left right -> Stdlib.compare right left
 
 let string_of_mapper = function
   | Add offset -> Printf.sprintf "Add %d" offset

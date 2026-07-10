@@ -110,6 +110,40 @@ val map2 : ('a -> 'b -> 'c) -> 'a t -> 'b t -> 'c t
     Raises [Invalid_argument] when the vectors have different lengths. *)
 val combine : 'a t -> 'b t -> ('a * 'b) t
 
+(** Apply [f] to matching values from two vectors from front to back.
+
+    Raises [Invalid_argument] without calling [f] when the vectors have
+    different lengths. *)
+val iter2 : ('a -> 'b -> unit) -> 'a t -> 'b t -> unit
+
+(** Fold over matching values from two vectors from front to back.
+
+    Raises [Invalid_argument] without calling [f] when the vectors have
+    different lengths. *)
+val fold_left2 :
+  ('acc -> 'a -> 'b -> 'acc) -> 'acc -> 'a t -> 'b t -> 'acc
+
+(** Return [true] when [p] holds for every pair of matching values. Stops at
+    the first failure.
+
+    Raises [Invalid_argument] without calling [p] when the vectors have
+    different lengths. *)
+val for_all2 : ('a -> 'b -> bool) -> 'a t -> 'b t -> bool
+
+(** Return [true] when [p] holds for any pair of matching values. Stops at the
+    first match.
+
+    Raises [Invalid_argument] without calling [p] when the vectors have
+    different lengths. *)
+val exists2 : ('a -> 'b -> bool) -> 'a t -> 'b t -> bool
+
+(** Fold over matching values from two vectors from back to front.
+
+    Raises [Invalid_argument] without calling [f] when the vectors have
+    different lengths. *)
+val fold_right2 :
+  ('a -> 'b -> 'acc -> 'acc) -> 'a t -> 'b t -> 'acc -> 'acc
+
 (** Return [true] when any value satisfies [p]. Stops at the first match. *)
 val exists : ('a -> bool) -> 'a t -> bool
 
@@ -130,6 +164,40 @@ val find_map : ('a -> 'b option) -> 'a t -> 'b option
 
 (** Return [true] when [value] is equal to one of the vector values. *)
 val mem : 'a -> 'a t -> bool
+
+(** [equal eq left right] is [true] when [left] and [right] have the same
+    length and [eq] holds for every pair of values at the same position.
+
+    [eq] is not called when the vectors have different lengths. *)
+val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+
+(** Compare two vectors lexicographically using [compare_value]. The empty
+    vector is smaller than any non-empty vector.
+
+    [compare_value] may be called even when the vectors have different
+    lengths. *)
+val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
+
+(** Return the value associated with [key] in [bindings]. Keys match when
+    [cmp stored_key key = 0]. If multiple bindings have matching keys, return
+    the value from the leftmost binding. When [cmp] is omitted, keys are
+    matched using structural equality.
+
+    Raises [Not_found] when [key] has no binding. *)
+val assoc : ?cmp:('a -> 'a -> int) -> 'a -> ('a * 'b) t -> 'b
+
+(** Like [assoc], but return [None] when [key] has no binding. *)
+val assoc_opt : ?cmp:('a -> 'a -> int) -> 'a -> ('a * 'b) t -> 'b option
+
+(** Return [true] when [key] has a binding in [bindings]. When [cmp] is omitted,
+    keys are matched using structural equality. *)
+val mem_assoc : ?cmp:('a -> 'a -> int) -> 'a -> ('a * 'b) t -> bool
+
+(** Return [bindings] without the first binding whose key matches [key], if
+    any. Keys match when [cmp stored_key key = 0]. When [cmp] is omitted, keys
+    are matched using structural equality. *)
+val remove_assoc :
+  ?cmp:('a -> 'a -> int) -> 'a -> ('a * 'b) t -> ('a * 'b) t
 
 (** Apply [f] to each value from front to back. *)
 val iter : ('a -> unit) -> 'a t -> unit

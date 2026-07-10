@@ -1338,19 +1338,6 @@ let rev = function
 
 let concat_map f v = fold_left (fun acc value -> concat acc (f value)) empty v
 
-let map2 f left right =
-  let count = length left in
-  if count <> length right then invalid_arg "Rrbvec.map2";
-  if count = 0 then empty
-  else
-    let left = to_array left in
-    let right = to_array right in
-    of_array
-      (Array.init count (fun index ->
-           f (Array.unsafe_get left index) (Array.unsafe_get right index)))
-
-let combine left right = map2 (fun left right -> (left, right)) left right
-
 exception Predicate_found
 exception Predicate_failed
 
@@ -1556,6 +1543,445 @@ let find_map f v =
 
 let mem value v = exists (( = ) value) v
 
+type cursor_phase = Root | Root_rest | Done
+
+type 'a leaf_cursor = {
+  cursor_root : 'a node;
+  cursor_final : 'a array;
+  cursor_children : 'a node array array;
+  cursor_next_child : int array;
+  mutable cursor_depth : int;
+  mutable cursor_phase : cursor_phase;
+  mutable cursor_values : 'a array;
+  mutable cursor_index : int;
+}
+
+let make_leaf_cursor v =
+  let stack_size = max 0 (node_height v.root) in
+  {
+    cursor_root = v.root;
+    cursor_final = v.tail;
+    cursor_children = Array.make stack_size [||];
+    cursor_next_child = Array.make stack_size 0;
+    cursor_depth = 0;
+    cursor_phase = Root;
+    cursor_values = v.head;
+    cursor_index = 0;
+  }
+
+let make_reverse_leaf_cursor v =
+  let stack_size = max 0 (node_height v.root) in
+  {
+    cursor_root = v.root;
+    cursor_final = v.head;
+    cursor_children = Array.make stack_size [||];
+    cursor_next_child = Array.make stack_size 0;
+    cursor_depth = 0;
+    cursor_phase = Root;
+    cursor_values = v.tail;
+    cursor_index = Array.length v.tail - 1;
+  }
+
+(* Keep forward and reverse operations separate so forward pairwise traversal
+   does not branch on direction at each leaf boundary. *)
+let cursor_set_values cursor values =
+  cursor.cursor_values <- values;
+  cursor.cursor_index <- 0
+
+let reverse_cursor_set_values cursor values =
+  cursor.cursor_values <- values;
+  cursor.cursor_index <- Array.length values - 1
+
+let rec cursor_descend cursor = function
+  | Empty -> false
+  | Leaf values ->
+      cursor_set_values cursor values;
+      true
+  | Branch branch ->
+      let depth = cursor.cursor_depth in
+      Array.unsafe_set cursor.cursor_children depth branch.children;
+      Array.unsafe_set cursor.cursor_next_child depth 1;
+      cursor.cursor_depth <- depth + 1;
+      cursor_descend cursor (Array.unsafe_get branch.children 0)
+
+let rec reverse_cursor_descend cursor = function
+  | Empty -> false
+  | Leaf values ->
+      reverse_cursor_set_values cursor values;
+      true
+  | Branch branch ->
+      let depth = cursor.cursor_depth in
+      let child_index = Array.length branch.children - 1 in
+      Array.unsafe_set cursor.cursor_children depth branch.children;
+      Array.unsafe_set cursor.cursor_next_child depth (child_index - 1);
+      cursor.cursor_depth <- depth + 1;
+      reverse_cursor_descend cursor
+        (Array.unsafe_get branch.children child_index)
+
+let rec cursor_next_root_leaf cursor =
+  let depth = cursor.cursor_depth in
+  if depth = 0 then false
+  else
+    let level = depth - 1 in
+    let children = Array.unsafe_get cursor.cursor_children level in
+    let child_index = Array.unsafe_get cursor.cursor_next_child level in
+    if child_index = Array.length children then (
+      cursor.cursor_depth <- level;
+      cursor_next_root_leaf cursor)
+    else (
+      Array.unsafe_set cursor.cursor_next_child level (child_index + 1);
+      cursor_descend cursor (Array.unsafe_get children child_index))
+
+let rec reverse_cursor_next_root_leaf cursor =
+  let depth = cursor.cursor_depth in
+  if depth = 0 then false
+  else
+    let level = depth - 1 in
+    let children = Array.unsafe_get cursor.cursor_children level in
+    let child_index = Array.unsafe_get cursor.cursor_next_child level in
+    if child_index < 0 then (
+      cursor.cursor_depth <- level;
+      reverse_cursor_next_root_leaf cursor)
+    else (
+      Array.unsafe_set cursor.cursor_next_child level (child_index - 1);
+      reverse_cursor_descend cursor (Array.unsafe_get children child_index))
+
+let rec cursor_advance cursor =
+  match cursor.cursor_phase with
+  | Root ->
+      cursor.cursor_phase <- Root_rest;
+      if cursor_descend cursor cursor.cursor_root then true
+      else cursor_advance cursor
+  | Root_rest ->
+      if cursor_next_root_leaf cursor then true
+      else (
+        cursor.cursor_phase <- Done;
+        if Array.length cursor.cursor_final = 0 then false
+        else (
+          cursor_set_values cursor cursor.cursor_final;
+          true))
+  | Done -> false
+
+let rec reverse_cursor_advance cursor =
+  match cursor.cursor_phase with
+  | Root ->
+      cursor.cursor_phase <- Root_rest;
+      if reverse_cursor_descend cursor cursor.cursor_root then true
+      else reverse_cursor_advance cursor
+  | Root_rest ->
+      if reverse_cursor_next_root_leaf cursor then true
+      else (
+        cursor.cursor_phase <- Done;
+        if Array.length cursor.cursor_final = 0 then false
+        else (
+          reverse_cursor_set_values cursor cursor.cursor_final;
+          true))
+  | Done -> false
+
+let cursor_ensure_values cursor =
+  cursor.cursor_index < Array.length cursor.cursor_values
+  || cursor_advance cursor
+
+let reverse_cursor_ensure_values cursor =
+  cursor.cursor_index >= 0 || reverse_cursor_advance cursor
+
+let cursor_available cursor =
+  Array.length cursor.cursor_values - cursor.cursor_index
+
+let reverse_cursor_available cursor = cursor.cursor_index + 1
+
+let cursor_move cursor count =
+  cursor.cursor_index <- cursor.cursor_index + count
+
+let reverse_cursor_move cursor count =
+  cursor.cursor_index <- cursor.cursor_index - count
+
+let cursor_common_chunk_length left right remaining =
+  let left_has_values = cursor_ensure_values left in
+  let right_has_values = cursor_ensure_values right in
+  assert (left_has_values && right_has_values);
+  let left_available = cursor_available left in
+  let right_available = cursor_available right in
+  min remaining (min left_available right_available)
+
+let reverse_cursor_common_chunk_length left right remaining =
+  let left_has_values = reverse_cursor_ensure_values left in
+  let right_has_values = reverse_cursor_ensure_values right in
+  assert (left_has_values && right_has_values);
+  let left_available = reverse_cursor_available left in
+  let right_available = reverse_cursor_available right in
+  min remaining (min left_available right_available)
+
+let rec for_all2_array_range predicate left left_index right right_index count =
+  count = 0
+  ||
+  (predicate
+     (Array.unsafe_get left left_index)
+     (Array.unsafe_get right right_index)
+  && for_all2_array_range predicate left (left_index + 1) right
+       (right_index + 1) (count - 1))
+
+let equal equal_value left right =
+  let count = length left in
+  if count <> length right then false
+  else
+    match (left, right) with
+    | Empty_vector, Empty_vector -> true
+    | Vector left, Vector right ->
+        let left = make_leaf_cursor left in
+        let right = make_leaf_cursor right in
+        let rec loop remaining =
+          if remaining = 0 then true
+          else
+            let count = cursor_common_chunk_length left right remaining in
+            if
+              for_all2_array_range equal_value left.cursor_values
+                left.cursor_index right.cursor_values right.cursor_index count
+            then (
+              left.cursor_index <- left.cursor_index + count;
+              right.cursor_index <- right.cursor_index + count;
+              loop (remaining - count))
+            else false
+        in
+        loop count
+    | Empty_vector, Vector _ | Vector _, Empty_vector -> assert false
+
+let rec compare_array_range compare_value left left_index right right_index count =
+  if count = 0 then 0
+  else
+    let order =
+      compare_value
+        (Array.unsafe_get left left_index)
+        (Array.unsafe_get right right_index)
+    in
+    if order = 0 then
+      compare_array_range compare_value left (left_index + 1) right
+        (right_index + 1) (count - 1)
+    else order
+
+let compare compare_value left right =
+  let left_count = length left in
+  let right_count = length right in
+  let common_count = min left_count right_count in
+  if common_count = 0 then Int.compare left_count right_count
+  else
+    match (left, right) with
+    | Vector left, Vector right ->
+        let left = make_leaf_cursor left in
+        let right = make_leaf_cursor right in
+        let rec loop remaining =
+          if remaining = 0 then Int.compare left_count right_count
+          else
+            let count = cursor_common_chunk_length left right remaining in
+            let order =
+              compare_array_range compare_value left.cursor_values
+                left.cursor_index right.cursor_values right.cursor_index count
+            in
+            if order = 0 then (
+              left.cursor_index <- left.cursor_index + count;
+              right.cursor_index <- right.cursor_index + count;
+              loop (remaining - count))
+            else order
+        in
+        loop common_count
+    | Empty_vector, Empty_vector
+    | Empty_vector, Vector _
+    | Vector _, Empty_vector -> assert false
+
+let pairwise_count name left right =
+  let count = length left in
+  if count <> length right then invalid_arg name;
+  count
+
+let make_pair_cursors left right =
+  match (left, right) with
+  | Vector left, Vector right ->
+      (make_leaf_cursor left, make_leaf_cursor right)
+  | Empty_vector, Empty_vector
+  | Empty_vector, Vector _
+  | Vector _, Empty_vector -> assert false
+
+let make_reverse_pair_cursors left right =
+  match (left, right) with
+  | Vector left, Vector right ->
+      (make_reverse_leaf_cursor left, make_reverse_leaf_cursor right)
+  | Empty_vector, Empty_vector
+  | Empty_vector, Vector _
+  | Vector _, Empty_vector -> assert false
+
+let iter2_array f left left_index right right_index count =
+  for offset = 0 to count - 1 do
+    f
+      (Array.unsafe_get left (left_index + offset))
+      (Array.unsafe_get right (right_index + offset))
+  done
+
+let iter2 f left right =
+  let count = pairwise_count "Rrbvec.iter2" left right in
+  if count > 0 then
+    let left, right = make_pair_cursors left right in
+    let rec loop remaining =
+      if remaining > 0 then (
+        let count = cursor_common_chunk_length left right remaining in
+        iter2_array f left.cursor_values left.cursor_index right.cursor_values
+          right.cursor_index count;
+        cursor_move left count;
+        cursor_move right count;
+        loop (remaining - count))
+    in
+    loop count
+
+let fold_left2_array f acc left left_index right right_index count =
+  let acc = ref acc in
+  for offset = 0 to count - 1 do
+    acc :=
+      f !acc
+        (Array.unsafe_get left (left_index + offset))
+        (Array.unsafe_get right (right_index + offset))
+  done;
+  !acc
+
+let fold_left2 f acc left right =
+  let count = pairwise_count "Rrbvec.fold_left2" left right in
+  if count = 0 then acc
+  else
+    let left, right = make_pair_cursors left right in
+    let rec loop acc remaining =
+      if remaining = 0 then acc
+      else
+        let count = cursor_common_chunk_length left right remaining in
+        let acc =
+          fold_left2_array f acc left.cursor_values left.cursor_index
+            right.cursor_values right.cursor_index count
+        in
+        cursor_move left count;
+        cursor_move right count;
+        loop acc (remaining - count)
+    in
+    loop acc count
+
+let for_all2 predicate left right =
+  let count = pairwise_count "Rrbvec.for_all2" left right in
+  if count = 0 then true
+  else
+    let left, right = make_pair_cursors left right in
+    let rec loop remaining =
+      if remaining = 0 then true
+      else
+        let count = cursor_common_chunk_length left right remaining in
+        if
+          for_all2_array_range predicate left.cursor_values left.cursor_index
+            right.cursor_values right.cursor_index count
+        then (
+          cursor_move left count;
+          cursor_move right count;
+          loop (remaining - count))
+        else false
+    in
+    loop count
+
+let rec exists2_array_range predicate left left_index right right_index count =
+  count > 0
+  &&
+  (predicate
+     (Array.unsafe_get left left_index)
+     (Array.unsafe_get right right_index)
+  || exists2_array_range predicate left (left_index + 1) right
+       (right_index + 1) (count - 1))
+
+let exists2 predicate left right =
+  let count = pairwise_count "Rrbvec.exists2" left right in
+  if count = 0 then false
+  else
+    let left, right = make_pair_cursors left right in
+    let rec loop remaining =
+      if remaining = 0 then false
+      else
+        let count = cursor_common_chunk_length left right remaining in
+        if
+          exists2_array_range predicate left.cursor_values left.cursor_index
+            right.cursor_values right.cursor_index count
+        then true
+        else (
+          cursor_move left count;
+          cursor_move right count;
+          loop (remaining - count))
+    in
+    loop count
+
+let fold_right2_array f left left_index right right_index count acc =
+  let acc = ref acc in
+  for offset = 0 to count - 1 do
+    acc :=
+      f
+        (Array.unsafe_get left (left_index - offset))
+        (Array.unsafe_get right (right_index - offset))
+        !acc
+  done;
+  !acc
+
+let fold_right2 f left right acc =
+  let count = pairwise_count "Rrbvec.fold_right2" left right in
+  if count = 0 then acc
+  else
+    let left, right = make_reverse_pair_cursors left right in
+    let rec loop acc remaining =
+      if remaining = 0 then acc
+      else
+        let count =
+          reverse_cursor_common_chunk_length left right remaining
+        in
+        let acc =
+          fold_right2_array f left.cursor_values left.cursor_index
+            right.cursor_values right.cursor_index count acc
+        in
+        reverse_cursor_move left count;
+        reverse_cursor_move right count;
+        loop acc (remaining - count)
+    in
+    loop acc count
+
+let assoc ?cmp key bindings =
+  match cmp with
+  | None -> snd (find (fun (candidate, _) -> candidate = key) bindings)
+  | Some cmp ->
+      snd (find (fun (candidate, _) -> cmp candidate key = 0) bindings)
+
+let assoc_opt ?cmp key bindings =
+  match cmp with
+  | None ->
+      find_map
+        (fun (candidate, value) ->
+          if candidate = key then Some value else None)
+        bindings
+  | Some cmp ->
+      find_map
+        (fun (candidate, value) ->
+          if cmp candidate key = 0 then Some value else None)
+        bindings
+
+let mem_assoc ?cmp key bindings =
+  match cmp with
+  | None -> exists (fun (candidate, _) -> candidate = key) bindings
+  | Some cmp -> exists (fun (candidate, _) -> cmp candidate key = 0) bindings
+
+let remove_assoc ?cmp key bindings =
+  match cmp with
+  | None ->
+      snd
+        (fold_left
+           (fun (removed, result) ((candidate, _) as binding) ->
+             if (not removed) && candidate = key then (true, result)
+             else (removed, push_back result binding))
+           (false, empty) bindings)
+  | Some cmp ->
+      snd
+        (fold_left
+           (fun (removed, result) ((candidate, _) as binding) ->
+             if (not removed) && cmp candidate key = 0 then (true, result)
+             else (removed, push_back result binding))
+           (false, empty) bindings)
+
 let init_array length start f =
   if length = 0 then [||]
   else
@@ -1618,6 +2044,34 @@ let chunk_sink_result sink =
   | None -> empty
   | Some chunk ->
       finish_nonempty_chunks sink.sink_chunks_rev chunk sink.sink_chunk_length
+
+let map2_array f sink left left_index right right_index count =
+  for offset = 0 to count - 1 do
+    chunk_sink_add sink
+      (f
+         (Array.unsafe_get left (left_index + offset))
+         (Array.unsafe_get right (right_index + offset)))
+  done
+
+let map2 f left right =
+  let count = pairwise_count "Rrbvec.map2" left right in
+  if count = 0 then empty
+  else
+    let left, right = make_pair_cursors left right in
+    let sink = create_chunk_sink () in
+    let rec loop remaining =
+      if remaining = 0 then chunk_sink_result sink
+      else
+        let count = cursor_common_chunk_length left right remaining in
+        map2_array f sink left.cursor_values left.cursor_index
+          right.cursor_values right.cursor_index count;
+        cursor_move left count;
+        cursor_move right count;
+        loop (remaining - count)
+    in
+    loop count
+
+let combine left right = map2 (fun left right -> (left, right)) left right
 
 let filter_array p sink values =
   for index = 0 to Array.length values - 1 do
