@@ -61,12 +61,12 @@ let string_contains ~needle haystack =
   needle_length = 0 || loop 0
 
 let check_invariants name v =
-  try invariants v
+  try Private.invariants v
   with exn ->
     Alcotest.failf "%s: invariant failure: %s" name (Printexc.to_string exn)
 
 let check_invariant_failure_contains name expected_message v =
-  match invariants v with
+  match Private.invariants v with
   | () -> Alcotest.failf "%s: expected invariant failure" name
   | exception exn ->
       let message = Printexc.to_string exn in
@@ -75,6 +75,10 @@ let check_invariant_failure_contains name expected_message v =
           expected_message message
 
 let range n = List.init n Fun.id
+
+let non_negative_mod value modulus =
+  let remainder = value mod modulus in
+  if remainder < 0 then remainder + modulus else remainder
 
 let list_slice values start stop =
   let rec drop count values =
@@ -104,6 +108,15 @@ let internal_height v =
     | 1 -> (Obj.magic (Obj.field root 3) : int)
     | _ -> Alcotest.fail "unexpected rrb node tag"
 
+let root_child_count v =
+  let root = Obj.field (Obj.field (Obj.repr v) 0) 1 in
+  if Obj.is_int root then 0
+  else
+    match Obj.tag root with
+    | 0 -> 0
+    | 1 -> Obj.size (Obj.field root 0)
+    | _ -> Alcotest.fail "unexpected rrb node tag"
+
 let regular_size_table_count v =
   let rec node_size_table_count node =
     if Obj.is_int node then 0
@@ -130,6 +143,85 @@ let header_tailoff v =
 
 let header_head_length v =
   Array.length (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 4) : int array)
+
+let header_tail_array v =
+  (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 2) : int array)
+
+let header_head_array v =
+  (Obj.magic (Obj.field (Obj.field (Obj.repr v) 0) 4) : int array)
+
+let check_same_array name expected actual =
+  check name (expected == actual)
+
+let check_node_shared name expected v =
+  let root = Obj.field (Obj.field (Obj.repr v) 0) 1 in
+  let expected = Obj.repr expected in
+  let rec contains node =
+    node == expected
+    ||
+    if Obj.is_int node || Obj.tag node <> 1 then false
+    else
+      let children = Obj.field node 0 in
+      let rec child_contains index =
+        index < Obj.size children
+        && (contains (Obj.field children index) || child_contains (index + 1))
+      in
+      child_contains 0
+  in
+  check name (contains root)
+
+let normalized_left_middle_height v =
+  max (internal_height v) (if header_tail_length v = 0 then -1 else 0)
+
+let normalized_right_middle_height v =
+  max (internal_height v) (if header_head_length v = 0 then -1 else 0)
+
+let check_concat_height_bound name left right combined =
+  let expected_maximum =
+    max (normalized_left_middle_height left)
+      (normalized_right_middle_height right)
+    + 1
+  in
+  check name (internal_height combined <= expected_maximum)
+
+let rec pairwise_concat = function
+  | [] -> empty
+  | [ values ] -> values
+  | values ->
+      let rec concat_pass acc = function
+        | left :: right :: rest ->
+            concat_pass (concat left right :: acc) rest
+        | [ unpaired ] -> List.rev (unpaired :: acc)
+        | [] -> List.rev acc
+      in
+      pairwise_concat (concat_pass [] values)
+
+let check_int_vector name ?(indices = []) expected actual =
+  let expected_length = Array.length expected in
+  check_invariants (name ^ " structural invariants") actual;
+  check_int (name ^ " length") expected_length (length actual);
+  check_list (name ^ " complete order") (Array.to_list expected)
+    (to_list actual);
+  if expected_length > 0 then (
+    let check_position label index =
+      check_int (name ^ " " ^ label) (Array.unsafe_get expected index)
+        (nth actual index)
+    in
+    check_position "first" 0;
+    check_position "middle" (expected_length / 2);
+    check_position "last" (expected_length - 1));
+  List.iter
+    (fun index ->
+      if index < 0 || index >= expected_length then
+        Alcotest.failf "%s representative index %d is out of bounds" name index;
+      check_int
+        (Printf.sprintf "%s nth %d" name index)
+        (Array.unsafe_get expected index)
+        (nth actual index))
+    indices;
+  check_int (name ^ " fold sum")
+    (Array.fold_left ( + ) 0 expected)
+    (fold_left ( + ) 0 actual)
 
 type 'a raw_node =
   | Raw_empty
@@ -182,6 +274,20 @@ let raw_branch children =
       count = !count;
       height = !height + 1;
     }
+
+let raw_leaf_from_counter next_value length =
+  let start = !next_value in
+  next_value := start + length;
+  raw_leaf_range start length
+
+let raw_branch_of_leaf_lengths next_value lengths =
+  raw_branch
+    (Array.of_list
+       (List.map (raw_leaf_from_counter next_value) lengths))
+
+let raw_branch_of_full_leaves next_value arity =
+  raw_branch
+    (Array.init arity (fun _ -> raw_leaf_from_counter next_value rrb_width))
 
 let raw_vector root =
   let count =
@@ -245,8 +351,10 @@ let test_invariants_hold_for_public_operations () =
     concat (subvec pushed 0 500) (subvec pushed 500 (length pushed))
   in
   check_invariants "concat" combined;
-  check_invariants "append_list" (append_list pushed [ 1100; 1101 ]);
-  check_invariants "append_array" (append_array pushed [| 1100; 1101 |]);
+  check_invariants "append_list"
+    (append_list pushed [ 1100; 1101 ]);
+  check_invariants "append_array"
+    (append_array pushed [| 1100; 1101 |]);
   check_invariants "map" (map (( + ) 1) pushed)
 
 let test_invariants_report_malformed_leaf () =
@@ -304,12 +412,11 @@ let test_invariants_reject_child_height_mismatch () =
   check_invariant_failure_contains "child height mismatch"
     "child height must equal branch height - 1" malformed
 
-let test_invariants_reject_skinny_search_step () =
-  let malformed =
+let test_scala_quick_invariants_allow_locally_sparse_nodes () =
+  let sparse =
     raw_vector (raw_branch (Array.init rrb_width (fun _ -> raw_leaf 1)))
   in
-  check_invariant_failure_contains "skinny search step" "relaxed search step"
-    malformed
+  check_invariants "Scala Quick locally sparse node" sparse
 
 let test_invariants_reject_linear_height_degradation () =
   let rec skinny_chain height =
@@ -665,47 +772,384 @@ let test_concat_and_subvec_preserve_order () =
   expect_none "subvec inverted range" (Rrbvec.subvec combined 2 1);
   expect_none "subvec past end" (Rrbvec.subvec combined 0 1121)
 
-let test_concat_preserves_outer_edge_caches () =
-  let left_head = [ -4; -3; -2; -1 ] in
-  let left =
-    of_array (Array.init 64 Fun.id)
-    |> fun values ->
-    List.fold_left push_back values (List.init 9 (fun i -> 64 + i))
-    |> fun values ->
-    List.fold_right (fun value acc -> push_front acc value) left_head values
-  in
-  let right_head = [ 1_000; 1_001; 1_002; 1_003; 1_004 ] in
-  let right =
-    of_array (Array.init 64 (fun i -> 2_000 + i))
-    |> fun values ->
-    List.fold_left push_back values (List.init 7 (fun i -> 3_000 + i))
-    |> fun values ->
-    List.fold_right (fun value acc -> push_front acc value) right_head values
-  in
-  let combined = concat left right in
-  check_int "concat preserves left head cache" (List.length left_head)
-    (header_head_length combined);
-  check_int "concat preserves right tail cache" 7 (header_tail_length combined);
-  check_int "concat tailoff matches right tail"
-    (length combined - header_tail_length combined)
-    (header_tailoff combined);
-  check_invariants "concat preserves edge caches" combined;
-  check_list "concat preserves cached edge order"
-    (to_list left @ to_list right)
-    (to_list combined)
+let concat_49_chunks_of_65 () =
+  List.init 49 (fun chunk ->
+      Rrbvec.init 65 (fun index -> (chunk * 65) + index))
 
-let test_concat_small_right_extends_existing_tail () =
+let concat_49_by_65_expected = Array.init 3185 Fun.id
+
+let concat_49_by_65_indices = [ 0; 31; 32; 64; 65; 1592; 3120; 3184 ]
+
+let test_concat_left_associated_49_chunks_of_65_preserves_invariants_and_order () =
+  let chunks = concat_49_chunks_of_65 () in
+  let combined =
+    match chunks with
+    | [] -> Alcotest.fail "expected concat chunks"
+    | first :: rest -> List.fold_left concat first rest
+  in
+  check_int_vector "left-associated concat 49 chunks of 65"
+    ~indices:concat_49_by_65_indices concat_49_by_65_expected combined
+
+let test_concat_right_associated_49_chunks_of_65_preserves_invariants_and_order () =
+  let rec concat_right = function
+    | [] -> empty
+    | [ values ] -> values
+    | values :: rest -> concat values (concat_right rest)
+  in
+  check_int_vector "right-associated concat 49 chunks of 65"
+    ~indices:concat_49_by_65_indices concat_49_by_65_expected
+    (concat_right (concat_49_chunks_of_65 ()))
+
+let concat_radix_boundaries =
+  [ 0; 1; 31; 32; 33; 63; 64; 65; 1023; 1024; 1025 ]
+
+let test_concat_all_radix_boundary_pairs_preserve_invariants () =
+  List.iter
+    (fun left_length ->
+      List.iter
+        (fun right_length ->
+          let case_name =
+            Printf.sprintf "concat radix boundaries %d + %d" left_length
+              right_length
+          in
+          let left = Rrbvec.init left_length Fun.id in
+          let right =
+            Rrbvec.init right_length (fun index -> left_length + index)
+          in
+          let combined = concat left right in
+          if left_length = 0 then
+            check (case_name ^ " left identity") (combined == right);
+          if right_length = 0 then
+            check (case_name ^ " right identity") (combined == left);
+          check_int_vector case_name
+            (Array.init (left_length + right_length) Fun.id)
+            combined)
+        concat_radix_boundaries)
+    concat_radix_boundaries
+
+let test_concat_same_height_trees_uses_at_most_one_new_root_level () =
+  let length = 1025 in
+  let left = Rrbvec.init length Fun.id in
+  let right = Rrbvec.init length (fun index -> length + index) in
+  check_int "same-height setup" (internal_height left) (internal_height right);
+  let combined = concat left right in
+  check_int_vector "same-height concat" (Array.init (2 * length) Fun.id)
+    combined;
+  check_concat_height_bound "same-height concat root bound" left right combined
+
+let test_concat_short_left_with_tall_right_preserves_height_bound () =
+  let left_length = 65 in
+  let right_length = 32769 in
+  let left = Rrbvec.init left_length Fun.id in
+  let right =
+    Rrbvec.init right_length (fun index -> left_length + index)
+  in
+  check "short-left setup has unequal heights"
+    (internal_height left < internal_height right);
+  let combined = concat left right in
+  check_int_vector "short-left tall-right concat"
+    (Array.init (left_length + right_length) Fun.id)
+    combined;
+  check_concat_height_bound "short-left tall-right root bound" left right
+    combined
+
+let test_concat_tall_left_with_short_right_preserves_height_bound () =
+  let left_length = 32769 in
+  let right_length = 65 in
+  let left = Rrbvec.init left_length Fun.id in
+  let right =
+    Rrbvec.init right_length (fun index -> left_length + index)
+  in
+  check "tall-left setup has unequal heights"
+    (internal_height left > internal_height right);
+  let combined = concat left right in
+  check_int_vector "tall-left short-right concat"
+    (Array.init (left_length + right_length) Fun.id)
+    combined;
+  check_concat_height_bound "tall-left short-right root bound" left right
+    combined
+
+let test_concat_does_not_promote_when_final_forest_has_one_node () =
+  let left = Rrbvec.init 32 Fun.id in
+  let right = Rrbvec.init 1 (fun _ -> 32) in
+  let combined = concat left right in
+  check_int_vector "single-node final forest" (Array.init 33 Fun.id) combined;
+  check_int "single-node final forest root height" 0 (internal_height combined);
+  check_concat_height_bound "single-node final forest root bound" left right
+    combined
+
+let test_concat_promotes_once_when_final_forest_has_multiple_nodes () =
+  let left = Rrbvec.init 64 Fun.id in
+  let right = Rrbvec.init 1 (fun _ -> 64) in
+  let combined = concat left right in
+  check_int_vector "multi-node final forest" (Array.init 65 Fun.id) combined;
+  check_int "multi-node final forest root height" 1 (internal_height combined);
+  check_concat_height_bound "multi-node final forest root bound" left right
+    combined
+
+let test_concat_preserves_left_head_and_right_tail_identity () =
+  let left = push_front (Rrbvec.init 65 (fun index -> index + 1)) 0 in
+  let right = Rrbvec.init 70 (fun index -> 66 + index) in
+  let left_head = header_head_array left in
+  let right_tail = header_tail_array right in
+  let combined = concat left right in
+  check_int_vector "concat outer edge identity" (Array.init 136 Fun.id)
+    combined;
+  check_same_array "concat preserves left head identity" left_head
+    (header_head_array combined);
+  check_same_array "concat preserves right tail identity" right_tail
+    (header_tail_array combined)
+
+let test_concat_internalizes_left_tail_and_right_head_through_quick_rebalance () =
+  let check_case name left right =
+    let left_head = header_head_array left in
+    let right_tail = header_tail_array right in
+    let expected = Array.of_list (to_list left @ to_list right) in
+    let combined = concat left right in
+    check_int_vector name expected combined;
+    check_same_array (name ^ " left head identity") left_head
+      (header_head_array combined);
+    check_same_array (name ^ " right tail identity") right_tail
+      (header_tail_array combined)
+  in
+  let partial_left = Rrbvec.init 8 Fun.id in
+  let partial_right =
+    List.fold_right
+      (fun value values -> push_front values value)
+      (List.init 8 (fun index -> 1000 + index))
+      (Rrbvec.init 1 (fun _ -> 1008))
+  in
+  check_case "partial internalized edges" partial_left partial_right;
+  let full_left = Rrbvec.init 32 Fun.id in
+  let full_right =
+    List.fold_right
+      (fun value values -> push_front values value)
+      (List.init 32 (fun index -> 1000 + index))
+      (Rrbvec.init 1 (fun _ -> 1032))
+  in
+  check_case "full internalized edges" full_left full_right;
+  let absent_left = push_front empty 0 in
+  let absent_right = Rrbvec.init 1 (fun _ -> 1) in
+  check_case "absent internalized edges" absent_left absent_right
+
+let test_concat_exact_divisible_slot_totals_follow_scala_quick_bound () =
+  let check_case ?root_children name left right expected_length =
+    check_invariants (name ^ " left setup") left;
+    check_invariants (name ^ " right setup") right;
+    let combined = concat left right in
+    check_int_vector name (Array.init expected_length Fun.id) combined;
+    Option.iter
+      (fun expected ->
+        check_int (name ^ " root child count") expected
+          (root_child_count combined))
+      root_children
+  in
+  let next_value = ref 0 in
+  let left = raw_vector (raw_branch_of_leaf_lengths next_value [ 1; 1; 14 ]) in
+  let right = raw_vector (raw_branch_of_leaf_lengths next_value [ 14; 2 ]) in
+  check_int "exact 32 fixture length" 32 !next_value;
+  check_case ~root_children:4 "exact 32 logical slots" left right !next_value;
+  let next_value = ref 0 in
+  let left = raw_vector (raw_branch_of_leaf_lengths next_value [ 8; 8; 16 ]) in
+  let right =
+    raw_vector (raw_branch_of_leaf_lengths next_value [ 16; 8; 8 ])
+  in
+  check_int "exact 64 fixture length" 64 !next_value;
+  check_case ~root_children:5 "exact 64 logical slots" left right !next_value;
+  let next_value = ref 0 in
+  let arities = Array.init 35 (fun index -> if index < 9 then 30 else 29) in
+  let make_height_one arity =
+    raw_branch_of_full_leaves next_value arity
+  in
+  let left_children = Array.init 17 (fun index -> make_height_one arities.(index)) in
+  let right_children =
+    Array.init 18 (fun index -> make_height_one arities.(index + 17))
+  in
+  let left = raw_vector (raw_branch left_children) in
+  let right = raw_vector (raw_branch right_children) in
+  check_int "exact 1024 logical-slot fixture length" (1024 * rrb_width)
+    !next_value;
+  check_case "exact 1024 logical slots" left right !next_value
+
+let test_balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries () =
+  let chunk_sizes =
+    [
+      0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 32; 32; 48; 33;
+      31; 0; 107; 123; 32; 114; 32; 65; 65; 33; 65; 116; 65; 21; 12; 33;
+      1023; 0;
+    ]
+  in
+  let next_value = ref 0 in
+  let chunks =
+    List.map
+      (fun length ->
+        let start = !next_value in
+        next_value := start + length;
+        Rrbvec.init length (fun index -> start + index))
+      chunk_sizes
+  in
+  let rec reduce = function
+    | [] -> empty
+    | [ values ] -> values
+    | values ->
+        let rec pass acc = function
+          | left :: right :: rest ->
+              let combined = concat left right in
+              check_invariants "balanced pairwise intermediate" combined;
+              pass (combined :: acc) rest
+          | [ unpaired ] -> List.rev (unpaired :: acc)
+          | [] -> List.rev acc
+        in
+        reduce (pass [] values)
+  in
+  let combined = reduce chunks in
+  check_int_vector "balanced pairwise sparse boundaries"
+    (Array.init !next_value Fun.id) combined
+
+let test_concat_after_subvec_preserves_invariants_and_order () =
+  let left_source = Rrbvec.init 1100 Fun.id in
+  let right_source = Rrbvec.init 1100 (fun index -> 2000 + index) in
+  let left = subvec left_source 17 1083 in
+  let right = subvec right_source 13 1091 in
+  let expected = Array.of_list (to_list left @ to_list right) in
+  check_int_vector "concat after partial-leaf subvec" expected
+    (concat left right)
+
+let test_subvec_after_pairwise_concat_preserves_order () =
+  let combined = pairwise_concat (concat_49_chunks_of_65 ()) in
+  check_int_vector "pairwise source before subvec" concat_49_by_65_expected
+    combined;
+  let cases =
+    [
+      ("crosses first chunk boundary", 31, 99);
+      ("crosses pairwise concat boundary", 63, 132);
+      ("crosses middle concat boundary", 1560, 1625);
+      ("crosses right middle boundary", 3050, 3140);
+      ("crosses final tail", 3150, 3185);
+    ]
+  in
+  List.iter
+    (fun (name, start, stop) ->
+      let slice = subvec combined start stop in
+      check_int_vector name
+        (Array.sub concat_49_by_65_expected start (stop - start))
+        slice)
+    cases
+
+let test_alternating_concat_and_subvec_preserve_invariants_and_order () =
+  let check_step name expected values =
+    check_int_vector name (Array.of_list expected) values;
+    (values, expected)
+  in
+  let left = Rrbvec.init 65 Fun.id in
+  let right = Rrbvec.init 65 (fun index -> 65 + index) in
+  let values, expected =
+    check_step "alternating initial concat" (range 130)
+      (concat left right)
+  in
+  let values = subvec values 17 113 in
+  let expected = list_slice expected 17 113 in
+  let values, expected = check_step "alternating first subvec" expected values in
+  let suffix = Rrbvec.init 1025 (fun index -> 1000 + index) in
+  let suffix_values = to_list suffix in
+  let values, expected =
+    check_step "alternating tall suffix concat"
+      (expected @ suffix_values)
+      (concat values suffix)
+  in
+  let values = subvec values 31 (List.length expected - 9) in
+  let expected = list_slice expected 31 (List.length expected - 9) in
+  let values, expected = check_step "alternating second subvec" expected values in
+  let empty_slice = subvec values 40 40 in
+  ignore (check_step "alternating empty subvec" [] empty_slice);
+  let values, expected =
+    check_step "alternating empty concat identity" expected
+      (concat empty_slice values)
+  in
+  let prefix = Rrbvec.init 33 (fun index -> -33 + index) in
+  let values, expected =
+    check_step "alternating partial prefix concat"
+      (to_list prefix @ expected)
+      (concat prefix values)
+  in
+  let values = subvec values 1 (List.length expected - 1) in
+  let expected = list_slice expected 1 (List.length expected - 1) in
+  ignore (check_step "alternating final subvec" expected values)
+
+let concat_map_boundary_values value =
+  match non_negative_mod value 4 with
+  | 0 -> empty
+  | 1 -> singleton (value * 1000)
+  | 2 -> Rrbvec.init 32 (fun index -> (value * 1000) + index)
+  | _ -> Rrbvec.init 65 (fun index -> (value * 1000) + index)
+
+let list_concat_map_boundary_values values =
+  List.concat_map
+    (fun value -> to_list (concat_map_boundary_values value))
+    values
+
+let test_repeated_concat_map_preserves_invariants_and_order () =
+  let rec apply round values expected =
+    if round = 0 then ()
+    else
+      let values = concat_map concat_map_boundary_values values in
+      let expected = list_concat_map_boundary_values expected in
+      check_int_vector
+        (Printf.sprintf "repeated concat_map round %d" (3 - round))
+        (Array.of_list expected) values;
+      apply (round - 1) values expected
+  in
+  apply 2 (of_list [ 0; 1; 2; 3 ]) [ 0; 1; 2; 3 ]
+
+let test_concat_aliases_and_collection_helpers_preserve_invariants () =
+  let boundaries = [ 0; 1; 31; 32; 33; 63; 64; 65 ] in
+  List.iter
+    (fun left_length ->
+      List.iter
+        (fun right_length ->
+          let left = Rrbvec.init left_length Fun.id in
+          let right_values =
+            List.init right_length (fun index -> left_length + index)
+          in
+          let right = of_list right_values in
+          let expected = Array.init (left_length + right_length) Fun.id in
+          check_int_vector "concat alias" expected (concat left right);
+          check_int_vector "append alias" expected (append left right);
+          check_int_vector "prepend alias" expected (prepend left right);
+          check_int_vector "append_list helper" expected
+            (append_list left right_values);
+          let right_array = Array.of_list right_values in
+          let appended = append_array left right_array in
+          Array.fill right_array 0 (Array.length right_array) (-1);
+          check_int_vector "append_array copies input" expected appended;
+          let left_values = range left_length in
+          let right =
+            Rrbvec.init right_length (fun index -> left_length + index)
+          in
+          check_int_vector "prepend_list helper" expected
+            (prepend_list right left_values);
+          let left_array = Array.of_list left_values in
+          let prepended = prepend_array right left_array in
+          Array.fill left_array 0 (Array.length left_array) (-1);
+          check_int_vector "prepend_array copies input" expected prepended)
+        boundaries)
+    boundaries
+
+let test_concat_small_right_preserves_right_tail_segment () =
   let left =
     of_array (Array.init 64 Fun.id)
     |> fun values ->
     List.fold_left push_back values (List.init 9 (fun i -> 64 + i))
   in
   let right = of_array (Array.init 12 (fun i -> 1_000 + i)) in
+  let right_tail = header_tail_array right in
   let combined = concat left right in
-  check_invariants "concat small right extends existing tail" combined;
-  check_int "concat small right tail length" 21 (header_tail_length combined);
+  check_invariants "concat small right preserves right tail" combined;
+  check_int "concat small right tail length" 12 (header_tail_length combined);
   check_list "concat small right order" (to_list left @ to_list right)
-    (to_list combined)
+    (to_list combined);
+  check_same_array "concat small right tail identity" right_tail
+    (header_tail_array combined)
 
 let test_subvec_slices_head_root_and_tail () =
   let root_values = range 2048 in
@@ -750,6 +1194,38 @@ let test_subvec_small_slice_allocation_does_not_scale_with_vector_length () =
     (to_list slice);
   check_allocated_less_than "small subvec allocation" 200_000. allocated
 
+let test_subvec_whole_range_reuses_vector () =
+  let values = of_array (Array.init 10_000 Fun.id) in
+  let slice = subvec values 0 (length values) in
+  check "whole subvec reuses vector" (slice == values)
+
+let measure_repeated_subvec_allocation ~iterations values start stop =
+  let last = ref empty in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  for _ = 1 to iterations do
+    last := subvec values start stop
+  done;
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "repeated subvec allocation result" !last;
+  allocated
+
+let test_subvec_multi_child_slice_avoids_intermediate_collection_allocation () =
+  let size = 100_000 in
+  let values = of_array (Array.init size Fun.id) in
+  let allocated =
+    measure_repeated_subvec_allocation ~iterations:200 values 17 (size - 7)
+  in
+  check_allocated_less_than "multi-child subvec allocation" 500_000. allocated
+
+let test_subvec_root_only_slice_extracts_edges_during_slicing () =
+  let size = 100_000 in
+  let values = of_array (Array.init size Fun.id) in
+  let allocated =
+    measure_repeated_subvec_allocation ~iterations:200 values 17 (size - 64)
+  in
+  check_allocated_less_than "root-only subvec allocation" 550_000. allocated
+
 let test_subvec_collapses_promoted_singleton_root () =
   let promoted =
     concat (of_list [ 0 ]) (of_array (Array.init 1024 (fun i -> i + 1)))
@@ -759,11 +1235,46 @@ let test_subvec_collapses_promoted_singleton_root () =
   check_invariants "singleton root subvec" slice;
   check_list "singleton root subvec order" [ 0 ] (to_list slice)
 
-let test_concat_keeps_child_heights_uniform () =
-  let combined = concat (of_array (Array.init 1024 Fun.id)) (of_list [ 1024 ]) in
-  check_invariants "concat uniform child heights" combined;
-  check_int "concat uniform length" 1025 (length combined);
-  check_list "concat uniform order" (range 1025) (to_list combined)
+let test_subvec_collapses_concat_boundary_root () =
+  let values =
+    Rrbvec.init 31 Fun.id
+    |> fun values -> push_front values 0
+    |> fun values -> push_front values 0
+    |> fun values -> push_front values 0
+    |> fun values -> subvec values 29 34
+    |> fun values -> push_front values 0
+    |> fun values -> concat (Rrbvec.init 1024 Fun.id) values
+    |> fun values -> concat (Rrbvec.init 31 Fun.id) values
+    |> fun values -> concat values (singleton 0)
+  in
+  let slice = subvec values 1054 1062 in
+  check_invariants "concat boundary subvec" slice;
+  check_list "concat boundary subvec order"
+    (list_slice (to_list values) 1054 1062)
+    (to_list slice)
+
+let test_subvec_collapses_selected_internal_singleton_root () =
+  let values =
+    Rrbvec.init 31 Fun.id
+    |> fun values -> concat values empty
+    |> fun values -> subvec values 25 31
+    |> fun values -> subvec values 0 6
+    |> fun values -> push_front values 0
+    |> fun values -> concat (Rrbvec.init 64 Fun.id) values
+    |> fun values -> push_front values 0
+    |> fun values -> concat (Rrbvec.init 56 Fun.id) values
+    |> fun values -> concat (Rrbvec.init 31 Fun.id) values
+    |> fun values -> concat values (Rrbvec.init 1023 Fun.id)
+    |> fun values -> concat (Rrbvec.init 93 Fun.id) values
+    |> fun values -> snd (pop_front values)
+    |> fun values -> push_front values 0
+    |> fun values -> concat (Rrbvec.init 1 Fun.id) values
+  in
+  let slice = subvec values 957 990 in
+  check_invariants "selected internal singleton root" slice;
+  check_list "selected internal singleton root order"
+    (list_slice (to_list values) 957 990)
+    (to_list slice)
 
 let test_repeated_concat_stays_stack_safe () =
   let size = 20_000 in
@@ -791,7 +1302,7 @@ let chunk_bounds size chunks =
   in
   loop 0 0 []
 
-let test_repeated_chunk_concat_satisfies_relaxed_density () =
+let test_repeated_chunk_concat_satisfies_quick_height_bound () =
   let size = 50_000 in
   let values = of_array (Array.init size Fun.id) in
   let chunks =
@@ -811,7 +1322,7 @@ let test_repeated_chunk_concat_satisfies_relaxed_density () =
   check_int "repeated chunk concat sum" ((size * (size - 1)) / 2)
     (fold_left ( + ) 0 combined)
 
-let test_concat_sparse_middle_rebalance_allocation_skips_full_edges () =
+let quick_rebalance_sparse_center_fixture () =
   let full_leaf_count = 8 in
   let sparse_leaf_count = 2 in
   let next_value = ref 0 in
@@ -820,50 +1331,57 @@ let test_concat_sparse_middle_rebalance_allocation_skips_full_edges () =
     next_value := start + length;
     raw_leaf_range start length
   in
-  let left =
-    raw_vector
-      (raw_branch
-         (Array.init
-            (full_leaf_count + sparse_leaf_count)
-            (fun index ->
-              if index < full_leaf_count then leaf rrb_width else leaf 1)))
+  let left_children =
+    Array.init
+      (full_leaf_count + sparse_leaf_count)
+      (fun index -> if index < full_leaf_count then leaf rrb_width else leaf 1)
   in
-  let right =
-    raw_vector
-      (raw_branch
-         (Array.init
-            (sparse_leaf_count + full_leaf_count)
-            (fun index ->
-              if index < sparse_leaf_count then leaf 1 else leaf rrb_width)))
+  let right_children =
+    Array.init
+      (sparse_leaf_count + full_leaf_count)
+      (fun index -> if index < sparse_leaf_count then leaf 1 else leaf rrb_width)
+  in
+  ( raw_vector (raw_branch left_children),
+    raw_vector (raw_branch right_children),
+    !next_value,
+    Array.sub left_children 0 full_leaf_count,
+    Array.sub right_children sparse_leaf_count full_leaf_count )
+
+let test_quick_rebalance_reuses_unchanged_full_prefix_and_suffix_nodes () =
+  let left, right, expected_length, left_prefix, right_suffix =
+    quick_rebalance_sparse_center_fixture ()
   in
   check_invariants "sparse middle concat left setup" left;
   check_invariants "sparse middle concat right setup" right;
+  let combined = concat left right in
+  check_int_vector "Quick sparse-center sharing"
+    (Array.init expected_length Fun.id) combined;
+  Array.iteri
+    (fun index node ->
+      check_node_shared
+        (Printf.sprintf "Quick unchanged left prefix node %d" index)
+        node combined)
+    left_prefix;
+  Array.iteri
+    (fun index node ->
+      check_node_shared
+        (Printf.sprintf "Quick unchanged right suffix node %d" index)
+        node combined)
+    right_suffix
+
+let test_quick_rebalance_allocates_only_boundary_paths_and_changed_nodes () =
+  let left, right, expected_length, _, _ =
+    quick_rebalance_sparse_center_fixture ()
+  in
+  check_invariants "Quick allocation left setup" left;
+  check_invariants "Quick allocation right setup" right;
   Gc.compact ();
   let before = Gc.allocated_bytes () in
   let combined = concat left right in
   let allocated = Gc.allocated_bytes () -. before in
-  check_invariants "sparse middle concat allocation" combined;
-  check_int "sparse middle concat allocation length" !next_value
-    (length combined);
-  check_list "sparse middle concat allocation order" (range !next_value)
-    (to_list combined);
-  check_allocated_less_than "sparse middle concat allocation" 8_000. allocated
-
-let test_push_large_allocation_is_linear () =
-  let size = 20_000 in
-  Gc.compact ();
-  let before = Gc.allocated_bytes () in
-  let values =
-    let rec loop i acc =
-      if i = size then acc else loop (i + 1) (push_back acc i)
-    in
-    loop 0 empty
-  in
-  let allocated = Gc.allocated_bytes () -. before in
-  check_invariants "large push allocation" values;
-  check_int "large push length" size (length values);
-  check_int "large push last" (size - 1) (peek_back values);
-  check_allocated_less_than "large push allocation" 60_000_000. allocated
+  check_int_vector "Quick boundary-path allocation"
+    (Array.init expected_length Fun.id) combined;
+  check_allocated_less_than "Quick boundary-path allocation" 20_000. allocated
 
 let test_push_back_same_height_fast_path_allocation () =
   let size = 20_000 in
@@ -987,22 +1505,39 @@ let test_pop_back_refills_tail_from_root () =
   check_list "pop back refill order" (range (3 * rrb_width))
     (to_list popped)
 
-let test_push_front_large_allocation_is_linear () =
-  let size = 20_000 in
+let test_repeated_pop_back_allocation_is_boundary_linear () =
+  let size = 5_000 in
+  let rec drain values =
+    match Rrbvec.pop_back values with
+    | None -> values
+    | Some (_, remaining) -> drain remaining
+  in
+  let values = of_array (Array.init size Fun.id) in
   Gc.compact ();
   let before = Gc.allocated_bytes () in
-  let values =
-    let rec loop i acc =
-      if i = size then acc else loop (i + 1) (push_front acc i)
-    in
-    loop 0 empty
-  in
+  let result = drain values in
   let allocated = Gc.allocated_bytes () -. before in
-  check_invariants "large push_front allocation" values;
-  check_int "large push_front length" size (length values);
-  check_int "large push_front first" (size - 1) (peek_front values);
-  check_int "large push_front last" 0 (peek_back values);
-  check_allocated_less_than "large push_front allocation" 60_000_000. allocated
+  check_invariants "repeated pop_back allocation" result;
+  check "repeated pop_back result" (is_empty result);
+  check_allocated_less_than "repeated pop_back allocation" 20_000_000.
+    allocated
+
+let test_repeated_pop_front_allocation_is_boundary_linear () =
+  let size = 5_000 in
+  let rec drain values =
+    match Rrbvec.pop_front values with
+    | None -> values
+    | Some (_, remaining) -> drain remaining
+  in
+  let values = of_array (Array.init size Fun.id) in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let result = drain values in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_invariants "repeated pop_front allocation" result;
+  check "repeated pop_front result" (is_empty result);
+  check_allocated_less_than "repeated pop_front allocation" 20_000_000.
+    allocated
 
 let test_push_front_same_height_fast_path_allocation () =
   let size = 20_000 in
@@ -1132,8 +1667,8 @@ let () =
             test_invariants_reject_root_singleton_branch;
           test_case "invariants_reject_child_height_mismatch"
             test_invariants_reject_child_height_mismatch;
-          test_case "invariants_reject_skinny_search_step"
-            test_invariants_reject_skinny_search_step;
+          test_case "scala_quick_invariants_allow_locally_sparse_nodes"
+            test_scala_quick_invariants_allow_locally_sparse_nodes;
           test_case "invariants_reject_linear_height_degradation"
             test_invariants_reject_linear_height_degradation;
           test_case "size_table_lookup_starts_from_radix_slot"
@@ -1151,31 +1686,83 @@ let () =
           test_case "write_operations_keep_all_historical_versions_persistent"
             test_write_operations_keep_all_historical_versions_persistent;
         ] );
+      ( "concat-quick",
+        [
+          test_case
+            "concat_left_associated_49_chunks_of_65_preserves_invariants_and_order"
+            test_concat_left_associated_49_chunks_of_65_preserves_invariants_and_order;
+          test_case
+            "concat_right_associated_49_chunks_of_65_preserves_invariants_and_order"
+            test_concat_right_associated_49_chunks_of_65_preserves_invariants_and_order;
+          test_case "concat_all_radix_boundary_pairs_preserve_invariants"
+            test_concat_all_radix_boundary_pairs_preserve_invariants;
+          test_case
+            "concat_same_height_trees_uses_at_most_one_new_root_level"
+            test_concat_same_height_trees_uses_at_most_one_new_root_level;
+          test_case "concat_short_left_with_tall_right_preserves_height_bound"
+            test_concat_short_left_with_tall_right_preserves_height_bound;
+          test_case "concat_tall_left_with_short_right_preserves_height_bound"
+            test_concat_tall_left_with_short_right_preserves_height_bound;
+          test_case "concat_does_not_promote_when_final_forest_has_one_node"
+            test_concat_does_not_promote_when_final_forest_has_one_node;
+          test_case "concat_promotes_once_when_final_forest_has_multiple_nodes"
+            test_concat_promotes_once_when_final_forest_has_multiple_nodes;
+          test_case "concat_preserves_left_head_and_right_tail_identity"
+            test_concat_preserves_left_head_and_right_tail_identity;
+          test_case
+            "concat_internalizes_left_tail_and_right_head_through_quick_rebalance"
+            test_concat_internalizes_left_tail_and_right_head_through_quick_rebalance;
+          test_case "concat_small_right_preserves_right_tail_segment"
+            test_concat_small_right_preserves_right_tail_segment;
+          test_case
+            "concat_exact_divisible_slot_totals_follow_scala_quick_bound"
+            test_concat_exact_divisible_slot_totals_follow_scala_quick_bound;
+          test_case
+            "balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries"
+            test_balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries;
+          test_case "concat_after_subvec_preserves_invariants_and_order"
+            test_concat_after_subvec_preserves_invariants_and_order;
+          test_case "subvec_after_pairwise_concat_preserves_order"
+            test_subvec_after_pairwise_concat_preserves_order;
+          test_case
+            "alternating_concat_and_subvec_preserve_invariants_and_order"
+            test_alternating_concat_and_subvec_preserve_invariants_and_order;
+          test_case "repeated_concat_map_preserves_invariants_and_order"
+            test_repeated_concat_map_preserves_invariants_and_order;
+          test_case "concat_aliases_and_collection_helpers_preserve_invariants"
+            test_concat_aliases_and_collection_helpers_preserve_invariants;
+          test_case
+            "quick_rebalance_reuses_unchanged_full_prefix_and_suffix_nodes"
+            test_quick_rebalance_reuses_unchanged_full_prefix_and_suffix_nodes;
+          test_case
+            "quick_rebalance_allocates_only_boundary_paths_and_changed_nodes"
+            test_quick_rebalance_allocates_only_boundary_paths_and_changed_nodes;
+        ] );
       ( "rrb",
         [
           test_case "concat_and_subvec_preserve_order"
             test_concat_and_subvec_preserve_order;
-          test_case "concat_preserves_outer_edge_caches"
-            test_concat_preserves_outer_edge_caches;
-          test_case "concat_small_right_extends_existing_tail"
-            test_concat_small_right_extends_existing_tail;
           test_case "subvec_slices_head_root_and_tail"
             test_subvec_slices_head_root_and_tail;
           test_case "subvec_small_slice_allocation_does_not_scale_with_vector_length"
             test_subvec_small_slice_allocation_does_not_scale_with_vector_length;
+          test_case "subvec_whole_range_reuses_vector"
+            test_subvec_whole_range_reuses_vector;
+          test_case
+            "subvec_multi_child_slice_avoids_intermediate_collection_allocation"
+            test_subvec_multi_child_slice_avoids_intermediate_collection_allocation;
+          test_case "subvec_root_only_slice_extracts_edges_during_slicing"
+            test_subvec_root_only_slice_extracts_edges_during_slicing;
           test_case "subvec_collapses_promoted_singleton_root"
             test_subvec_collapses_promoted_singleton_root;
-          test_case "concat_keeps_child_heights_uniform"
-            test_concat_keeps_child_heights_uniform;
+          test_case "subvec_collapses_concat_boundary_root"
+            test_subvec_collapses_concat_boundary_root;
+          test_case "subvec_collapses_selected_internal_singleton_root"
+            test_subvec_collapses_selected_internal_singleton_root;
           test_case "repeated_concat_stays_stack_safe"
             test_repeated_concat_stays_stack_safe;
-          test_case "repeated_chunk_concat_satisfies_relaxed_density"
-            test_repeated_chunk_concat_satisfies_relaxed_density;
-          test_case
-            "concat_sparse_middle_rebalance_allocation_skips_full_edges"
-            test_concat_sparse_middle_rebalance_allocation_skips_full_edges;
-          test_case "push_large_allocation_is_linear"
-            test_push_large_allocation_is_linear;
+          test_case "repeated_chunk_concat_satisfies_quick_height_bound"
+            test_repeated_chunk_concat_satisfies_quick_height_bound;
           test_case "push_back_same_height_fast_path_allocation"
             test_push_back_same_height_fast_path_allocation;
           test_case "push_keeps_height_logarithmic"
@@ -1188,8 +1775,10 @@ let () =
             test_subvec_keeps_right_edge_in_tail;
           test_case "pop_back_refills_tail_from_root"
             test_pop_back_refills_tail_from_root;
-          test_case "push_front_large_allocation_is_linear"
-            test_push_front_large_allocation_is_linear;
+          test_case "repeated_pop_back_allocation_is_boundary_linear"
+            test_repeated_pop_back_allocation_is_boundary_linear;
+          test_case "repeated_pop_front_allocation_is_boundary_linear"
+            test_repeated_pop_front_allocation_is_boundary_linear;
           test_case "push_front_same_height_fast_path_allocation"
             test_push_front_same_height_fast_path_allocation;
         ] );

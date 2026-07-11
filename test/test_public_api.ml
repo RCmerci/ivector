@@ -314,7 +314,7 @@ let test_pairwise_apis_large_allocation_is_small () =
   let mapped, map2_allocated =
     measure_allocated_bytes (fun () -> map2 ( + ) left right)
   in
-  invariants mapped;
+  Private.invariants mapped;
   check_int "large map2 length" size (length mapped);
   check_allocated_less_than "large map2 allocation" 2_000_000. map2_allocated
 
@@ -527,7 +527,7 @@ let test_optimized_public_apis_large_allocation_is_small () =
   let filtered, filter_allocated =
     measure_allocated_bytes (fun () -> filter (fun value -> value mod 3 <> 1) v)
   in
-  invariants filtered;
+  Private.invariants filtered;
   check_int "large filter length" (size - (size / 3)) (length filtered);
   check_int "large filter first" 0 (nth filtered 0);
   check_allocated_less_than "large filter allocation" 3_000_000.
@@ -536,7 +536,7 @@ let test_optimized_public_apis_large_allocation_is_small () =
     measure_allocated_bytes (fun () ->
         mapi (fun index value -> index + value) v)
   in
-  invariants mapped;
+  Private.invariants mapped;
   check_int "large mapi length" size (length mapped);
   check_int "large mapi first" 0 (nth mapped 0);
   check_int "large mapi last" ((size - 1) * 2) (nth mapped (size - 1));
@@ -545,7 +545,7 @@ let test_optimized_public_apis_large_allocation_is_small () =
   let initialized, init_allocated =
     measure_allocated_bytes (fun () -> init size Fun.id)
   in
-  invariants initialized;
+  Private.invariants initialized;
   check_int "large init length" size (length initialized);
   check_int "large init first" 0 (nth initialized 0);
   check_int "large init last" (size - 1) (nth initialized (size - 1));
@@ -556,7 +556,7 @@ let test_optimized_public_apis_large_allocation_is_small () =
           (fun value -> if value mod 4 = 0 then Some (value / 2) else None)
           v)
   in
-  invariants filter_mapped;
+  Private.invariants filter_mapped;
   check_int "large filter_map length" (size / 4) (length filter_mapped);
   check_int "large filter_map first" 0 (nth filter_mapped 0);
   check_int "large filter_map last" ((size - 4) / 2)
@@ -567,8 +567,8 @@ let test_optimized_public_apis_large_allocation_is_small () =
     measure_allocated_bytes (fun () ->
         partition (fun value -> value mod 2 = 0) v)
   in
-  invariants partition_left;
-  invariants partition_right;
+  Private.invariants partition_left;
+  Private.invariants partition_right;
   check_int "large partition left length" (size / 2) (length partition_left);
   check_int "large partition right length" (size / 2) (length partition_right);
   check_int "large partition left first" 0 (nth partition_left 0);
@@ -600,7 +600,7 @@ let test_rev_large_allocation_is_leaf_linear () =
   let before = Gc.allocated_bytes () in
   let reversed = rev v in
   let allocated = Gc.allocated_bytes () -. before in
-  invariants reversed;
+  Private.invariants reversed;
   check_int "large rev length" size (length reversed);
   check_int "large rev first" (size - 1) (nth reversed 0);
   check_int "large rev last" 0 (nth reversed (size - 1));
@@ -847,7 +847,7 @@ let test_remove_assoc_family_matches_list () =
   List.iter
     (fun key ->
       let actual = remove_assoc key v in
-      invariants actual;
+      Private.invariants actual;
       check_pair_list ("remove_assoc " ^ string_of_int key)
         (List.remove_assoc key bindings)
         (to_list actual))
@@ -858,7 +858,7 @@ let test_remove_assoc_family_matches_list () =
     @ [ (17, "later seventeen") ]
   in
   let large_removed = remove_assoc 17 (vector large_bindings) in
-  invariants large_removed;
+  Private.invariants large_removed;
   check_pair_list "remove_assoc traverses a multi-leaf vector"
     (List.remove_assoc 17 large_bindings)
     (to_list large_removed);
@@ -882,7 +882,7 @@ let test_remove_assoc_family_matches_list () =
   let custom_removed =
     remove_assoc ~cmp:compare_case_insensitive "alpha" custom_bindings
   in
-  invariants custom_removed;
+  Private.invariants custom_removed;
   check_string_list "remove_assoc custom comparison removes leftmost binding"
     [ "beta"; "ALPHA" ]
     (List.map fst (to_list custom_removed));

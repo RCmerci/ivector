@@ -36,7 +36,7 @@ let subvec values start stop =
   expect_some "subvec" (Rrbvec.subvec values start stop)
 
 let check_invariants name v =
-  try invariants v
+  try Private.invariants v
   with exn ->
     Alcotest.failf "%s: invariant failure: %s" name (Printexc.to_string exn)
 
@@ -95,6 +95,21 @@ type find_mapper = First_multiple of int | First_positive_offset of int
 type concat_mapper = Singleton of mapper | Keep_non_negative | Drop_all
 type sort_order = Ascending | Descending
 type partition_side = Left | Right | Joined
+
+type concat_association =
+  | Left_associated
+  | Right_associated
+  | Balanced_pairwise
+  | Randomly_paired of int list
+
+type concat_trace_operation =
+  | Trace_concat_left of int * int
+  | Trace_concat_right of int * int
+  | Trace_subvec of int * int
+  | Trace_push_front of int
+  | Trace_push_back of int
+  | Trace_pop_front
+  | Trace_pop_back
 
 type operation =
   | Push_back of int
@@ -726,6 +741,250 @@ let property_public_operations_preserve_invariants =
            (0, empty, []) operations);
       true)
 
+let concat_boundary_lengths =
+  [ 0; 1; 31; 32; 33; 63; 64; 65; 1023; 1024; 1025 ]
+
+let concat_chunk_length_gen =
+  let open QCheck2.Gen in
+  oneof_weighted
+    [
+      (8, oneof (List.map return concat_boundary_lengths));
+      (2, int_range 0 160);
+    ]
+
+let concat_chunk_sizes_gen =
+  let open QCheck2.Gen in
+  oneof_weighted
+    [
+      (2, return (List.init 49 (fun _ -> 65)));
+      (8, list_size (int_range 0 50) concat_chunk_length_gen);
+    ]
+
+let concat_association_gen =
+  let open QCheck2.Gen in
+  oneof
+    [
+      return Left_associated;
+      return Right_associated;
+      return Balanced_pairwise;
+      map
+        (fun choices -> Randomly_paired choices)
+        (list_size (int_range 0 60) int);
+    ]
+
+let string_of_concat_association = function
+  | Left_associated -> "left"
+  | Right_associated -> "right"
+  | Balanced_pairwise -> "pairwise"
+  | Randomly_paired choices ->
+      Printf.sprintf "random[%s]"
+        (String.concat "," (List.map string_of_int choices))
+
+let string_of_concat_association_case (sizes, associations) =
+  Printf.sprintf "chunks=[%s]\nassociations=[%s]"
+    (String.concat "," (List.map string_of_int sizes))
+    (String.concat ";" (List.map string_of_concat_association associations))
+
+let check_concat_model label values expected =
+  check_invariants label values;
+  let actual = to_list values in
+  if actual <> expected then
+    failf "%s: expected %s, got %s" label (string_of_int_list expected)
+      (string_of_int_list actual)
+
+let checked_concat label left right =
+  let combined = concat left right in
+  check_invariants label combined;
+  combined
+
+let vectors_for_chunk_sizes sizes =
+  let next_value = ref 0 in
+  let vectors =
+    List.map
+      (fun size ->
+        let start = !next_value in
+        next_value := start + size;
+        Rrbvec.init size (fun index -> start + index))
+      sizes
+  in
+  (vectors, List.init !next_value Fun.id)
+
+let reduce_left_associated vectors =
+  List.fold_left (checked_concat "left-associated intermediate") empty vectors
+
+let reduce_right_associated vectors =
+  let rec reduce = function
+    | [] -> empty
+    | [ values ] -> values
+    | values :: rest ->
+        checked_concat "right-associated intermediate" values (reduce rest)
+  in
+  reduce vectors
+
+let rec reduce_balanced_pairwise = function
+  | [] -> empty
+  | [ values ] -> values
+  | vectors ->
+      let rec pass acc = function
+        | left :: right :: rest ->
+            pass
+              (checked_concat "pairwise intermediate" left right :: acc)
+              rest
+        | [ unpaired ] -> List.rev (unpaired :: acc)
+        | [] -> List.rev acc
+      in
+      reduce_balanced_pairwise (pass [] vectors)
+
+let reduce_randomly_paired choices vectors =
+  let merge_at index vectors =
+    let rec loop skipped = function
+      | left :: right :: rest when index = 0 ->
+          List.rev_append skipped
+            (checked_concat "random-pair intermediate" left right :: rest)
+      | value :: rest -> loop (value :: skipped) rest
+      | [] -> List.rev skipped
+    in
+    loop [] vectors
+  in
+  let rec reduce choices vectors =
+    match vectors with
+    | [] -> empty
+    | [ values ] -> values
+    | _ ->
+        let choice, choices =
+          match choices with [] -> (0, []) | choice :: rest -> (choice, rest)
+        in
+        let index = non_negative_mod choice (List.length vectors - 1) in
+        reduce choices (merge_at index vectors)
+  in
+  reduce choices vectors
+
+let property_concat_association_orders_match_list_model =
+  let generator =
+    QCheck2.Gen.pair concat_chunk_sizes_gen
+      QCheck2.Gen.(list_size (int_range 0 8) concat_association_gen)
+  in
+  QCheck2.Test.make ~name:"concat association orders match list model"
+    ~count:300 ~print:string_of_concat_association_case generator
+    (fun (sizes, generated_associations) ->
+      let vectors, expected = vectors_for_chunk_sizes sizes in
+      let associations =
+        Left_associated :: Right_associated :: Balanced_pairwise
+        :: generated_associations
+      in
+      List.iter
+        (fun association ->
+          let values =
+            match association with
+            | Left_associated -> reduce_left_associated vectors
+            | Right_associated -> reduce_right_associated vectors
+            | Balanced_pairwise -> reduce_balanced_pairwise vectors
+            | Randomly_paired choices -> reduce_randomly_paired choices vectors
+          in
+          check_concat_model
+            ("association " ^ string_of_concat_association association)
+            values expected)
+        associations;
+      true)
+
+let string_of_concat_trace_operation = function
+  | Trace_concat_left (length, seed) ->
+      Printf.sprintf "concat_left(length=%d,seed=%d)" length seed
+  | Trace_concat_right (length, seed) ->
+      Printf.sprintf "concat_right(length=%d,seed=%d)" length seed
+  | Trace_subvec (start, length) ->
+      Printf.sprintf "subvec(start=%d,length=%d)" start length
+  | Trace_push_front value -> Printf.sprintf "push_front(%d)" value
+  | Trace_push_back value -> Printf.sprintf "push_back(%d)" value
+  | Trace_pop_front -> "pop_front"
+  | Trace_pop_back -> "pop_back"
+
+let string_of_concat_trace operations =
+  operations
+  |> List.mapi (fun index operation ->
+      Printf.sprintf "%d: %s" index (string_of_concat_trace_operation operation))
+  |> String.concat "\n"
+
+let concat_trace_operation_gen =
+  let open QCheck2.Gen in
+  let seed = int_range (-10_000) 10_000 in
+  oneof_weighted
+    [
+      (8, map2 (fun length seed -> Trace_concat_left (length, seed))
+            concat_chunk_length_gen seed);
+      (8, map2 (fun length seed -> Trace_concat_right (length, seed))
+            concat_chunk_length_gen seed);
+      (5, map2 (fun start length -> Trace_subvec (start, length)) int int);
+      (3, map (fun value -> Trace_push_front value) seed);
+      (3, map (fun value -> Trace_push_back value) seed);
+      (2, return Trace_pop_front);
+      (2, return Trace_pop_back);
+    ]
+
+let values_for_trace_chunk length seed =
+  List.init length (fun index -> (seed * 2048) + index)
+
+let apply_concat_trace_operation step values expected operation =
+  let values, expected =
+    match operation with
+    | Trace_concat_left (length, seed) ->
+        let chunk = values_for_trace_chunk length seed in
+        (concat (of_list chunk) values, chunk @ expected)
+    | Trace_concat_right (length, seed) ->
+        let chunk = values_for_trace_chunk length seed in
+        (concat values (of_list chunk), expected @ chunk)
+    | Trace_subvec (raw_start, raw_length) ->
+        let start, stop =
+          normalize_subvec_bounds expected raw_start raw_length
+        in
+        (subvec values start stop, list_slice expected start stop)
+    | Trace_push_front value -> (push_front values value, value :: expected)
+    | Trace_push_back value -> (push_back values value, expected @ [ value ])
+    | Trace_pop_front -> (
+        match expected with
+        | [] ->
+            expect_none "concat trace pop_front empty" (Rrbvec.pop_front values);
+            (values, expected)
+        | expected_value :: rest ->
+            let value, values = pop_front values in
+            if value <> expected_value then
+              failf "concat trace pop_front: expected %d, got %d" expected_value
+                value;
+            (values, rest))
+    | Trace_pop_back -> (
+        match List.rev expected with
+        | [] ->
+            expect_none "concat trace pop_back empty" (Rrbvec.pop_back values);
+            (values, expected)
+        | expected_value :: reversed_rest ->
+            let value, values = pop_back values in
+            if value <> expected_value then
+              failf "concat trace pop_back: expected %d, got %d" expected_value
+                value;
+            (values, List.rev reversed_rest))
+  in
+  let label =
+    Printf.sprintf "concat trace step %d after %s" step
+      (string_of_concat_trace_operation operation)
+  in
+  check_concat_model label values expected;
+  (values, expected)
+
+let property_concat_operation_sequences_match_list_model =
+  QCheck2.Test.make ~name:"concat operation sequences match list model"
+    ~count:300 ~print:string_of_concat_trace
+    QCheck2.Gen.(list_size (int_range 0 100) concat_trace_operation_gen)
+    (fun operations ->
+      ignore
+        (List.fold_left
+           (fun (step, values, expected) operation ->
+             let values, expected =
+               apply_concat_trace_operation step values expected operation
+             in
+             (step + 1, values, expected))
+           (0, empty, []) operations);
+      true)
+
 let () =
   Alcotest.run "rrbvec qcheck"
     [
@@ -733,5 +992,12 @@ let () =
         [
           QCheck_alcotest.to_alcotest ~speed_level:`Quick
             property_public_operations_preserve_invariants;
+        ] );
+      ( "concat-properties",
+        [
+          QCheck_alcotest.to_alcotest ~speed_level:`Quick
+            property_concat_association_orders_match_list_model;
+          QCheck_alcotest.to_alcotest ~speed_level:`Quick
+            property_concat_operation_sequences_match_list_model;
         ] );
     ]

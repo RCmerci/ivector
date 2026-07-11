@@ -141,7 +141,7 @@ let partition_rrbvec values = Rrbvec.partition keep_value values
 let partition_batvect values = BatVect.partition keep_value values
 
 let check_rrbvec_invariants name values =
-  try Rrbvec.invariants values
+  try Rrbvec.Private.invariants values
   with exn ->
     failwith
       (Printf.sprintf "%s: Rrbvec invariant failure: %s" name

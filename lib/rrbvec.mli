@@ -254,6 +254,11 @@ val of_array : 'a array -> 'a t
 (** Return the vector values as a new array in order. *)
 val to_array : 'a t -> 'a array
 
-(** Check internal structural invariants. Intended for tests and benchmarks.
-    Raises [Failure] with the failing node/vector path when an invariant fails. *)
-val invariants : 'a t -> unit
+module Private : sig
+  (** Check internal structural invariants and the Scala Quick logarithmic
+      height bound. The temporary [effectiveNumberOfSlots + 2] rebalance-window
+      rule is not a per-branch tree invariant. Intended for tests and
+      benchmarks. Raises [Failure] with the failing node/vector path when an
+      invariant fails. *)
+  val invariants : 'a t -> unit
+end
