@@ -140,6 +140,19 @@ let mapi_batvect values = BatVect.mapi mapi_value values
 let partition_rrbvec values = Rrbvec.partition keep_value values
 let partition_batvect values = BatVect.partition keep_value values
 
+let concat_map_singleton values = Rrbvec.concat_map Rrbvec.singleton values
+
+let concat_map_pair values =
+  Rrbvec.concat_map (fun value -> Rrbvec.of_array [| value; -value |]) values
+
+let concat_map_mostly_empty values =
+  Rrbvec.concat_map
+    (fun value -> if value mod 10 = 0 then Rrbvec.singleton value else Rrbvec.empty)
+    values
+
+let concat_map_constant mapped values =
+  Rrbvec.concat_map (fun _ -> mapped) values
+
 let check_rrbvec_invariants name values =
   try Rrbvec.Private.invariants values
   with exn ->
@@ -630,6 +643,16 @@ let benchmark_groups config values =
   let bounds = chunk_bounds config.size (min 8 config.size) in
   let list_values = List.init config.size Fun.id in
   let array_values = Array.init config.size Fun.id in
+  let concat_map_singleton_input = Rrbvec.init 20_000 Fun.id in
+  let concat_map_pair_input = Rrbvec.init 10_000 Fun.id in
+  let concat_map_mostly_empty_input = Rrbvec.init 20_000 Fun.id in
+  let concat_map_chunk_input = Rrbvec.init 5_000 Fun.id in
+  let concat_map_1024_input = Rrbvec.init 200 Fun.id in
+  let concat_map_one_large_input = Rrbvec.singleton 0 in
+  let concat_map_two_large_input = Rrbvec.of_array [| 0; 1 |] in
+  let concat_map_33_values = Rrbvec.init 33 Fun.id in
+  let concat_map_1024_values = Rrbvec.init 1024 Fun.id in
+  let concat_map_large_values = Rrbvec.init 1_000_000 Fun.id in
   let base_groups =
     [
       {
@@ -742,6 +765,71 @@ let benchmark_groups config values =
         [
           { name = "Rrbvec push then pop"; run = (fun () -> ignore (Sys.opaque_identity (push_pop_rrbvec config.size))) };
           { name = "BatVect append then pop"; run = (fun () -> ignore (Sys.opaque_identity (push_pop_batvect config.size))) };
+        ];
+    };
+    {
+      name = "Concat map";
+      cases =
+        [
+          {
+            name = "20k singleton";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_singleton concat_map_singleton_input)));
+          };
+          {
+            name = "10k pair";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity (concat_map_pair concat_map_pair_input)));
+          };
+          {
+            name = "20k mostly empty";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_mostly_empty concat_map_mostly_empty_input)));
+          };
+          {
+            name = "5k x 33 elements";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_constant concat_map_33_values
+                        concat_map_chunk_input)));
+          };
+          {
+            name = "200 x 1024 elements";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_constant concat_map_1024_values
+                        concat_map_1024_input)));
+          };
+          {
+            name = "one large vector";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_constant concat_map_large_values
+                        concat_map_one_large_input)));
+          };
+          {
+            name = "two large vectors";
+            run =
+              (fun () ->
+                ignore
+                  (Sys.opaque_identity
+                     (concat_map_constant concat_map_large_values
+                        concat_map_two_large_input)));
+          };
         ];
     };
     ]

@@ -117,6 +117,21 @@
 (defn cljs-push-pop [size]
   (cljs-pop-back-all (cljs-build-back size)))
 
+(defn cljs-concat-map-singleton [values]
+  (into [] (mapcat (fn [value] [value])) values))
+
+(defn cljs-concat-map-pair [values]
+  (into [] (mapcat (fn [value] [value (- value)])) values))
+
+(defn cljs-concat-map-mostly-empty [values]
+  (into []
+        (mapcat (fn [value]
+                  (if (zero? (mod value 10)) [value] [])))
+        values))
+
+(defn cljs-concat-map-constant [values mapped]
+  (into [] (mapcat (constantly mapped)) values))
+
 (defn js-backend [name api]
   {:name name
    :build-back #(.buildBack api %)
@@ -133,7 +148,11 @@
    :concat-chunks #(.concatChunks api %1 %2)
    :pop-back-all #(.popBackAll api %)
    :pop-front-all #(.popFrontAll api %)
-   :push-pop #(.pushPop api %)})
+   :push-pop #(.pushPop api %)
+   :concat-map-singleton #(.concatMapSingleton api %)
+   :concat-map-pair #(.concatMapPair api %)
+   :concat-map-mostly-empty #(.concatMapMostlyEmpty api %)
+   :concat-map-constant #(.concatMapConstant api %1 %2)})
 
 (defn cljs-backend [indices]
   {:name "cljs vector"
@@ -151,7 +170,11 @@
    :concat-chunks cljs-concat-chunks
    :pop-back-all cljs-pop-back-all
    :pop-front-all cljs-pop-front-all
-   :push-pop cljs-push-pop})
+   :push-pop cljs-push-pop
+   :concat-map-singleton cljs-concat-map-singleton
+   :concat-map-pair cljs-concat-map-pair
+   :concat-map-mostly-empty cljs-concat-map-mostly-empty
+   :concat-map-constant cljs-concat-map-constant})
 
 (defn check [label expected actual]
   (when-not (= expected actual)
@@ -168,7 +191,15 @@
         mapped ((:map-values backend) values)
         sliced ((:repeated-subvec backend) values subvec-steps)
         chunks ((:build-chunks backend) values (min concat-chunks size))
-        concatenated ((:concat-built-chunks backend) chunks)]
+        concatenated ((:concat-built-chunks backend) chunks)
+        concat-map-input ((:build-back backend) 20)
+        concat-map-singletons ((:concat-map-singleton backend) concat-map-input)
+        concat-map-pairs ((:concat-map-pair backend) concat-map-input)
+        concat-map-mostly-empty ((:concat-map-mostly-empty backend) concat-map-input)
+        concat-map-constant
+        ((:concat-map-constant backend)
+         ((:build-back backend) 3)
+         ((:build-back backend) 33))]
     (check (str (:name backend) " build length") size ((:length backend) values))
     (check (str (:name backend) " build sum") expected-sum ((:sum backend) values))
     (check (str (:name backend) " front length") size ((:length backend) front-values))
@@ -179,6 +210,10 @@
     (check (str (:name backend) " map sum") (+ (* 2 expected-sum) size) ((:sum backend) mapped))
     (check (str (:name backend) " subvec length") (- size (* 2 subvec-steps)) ((:length backend) sliced))
     (check (str (:name backend) " concat length") size ((:length backend) concatenated))
+    (check (str (:name backend) " concat_map singleton length") 20 ((:length backend) concat-map-singletons))
+    (check (str (:name backend) " concat_map pair length") 40 ((:length backend) concat-map-pairs))
+    (check (str (:name backend) " concat_map mostly-empty length") 2 ((:length backend) concat-map-mostly-empty))
+    (check (str (:name backend) " concat_map constant length") 99 ((:length backend) concat-map-constant))
     (check (str (:name backend) " pop_back length") 0 ((:length backend) ((:pop-back-all backend) values)))
     (check (str (:name backend) " pop_front length") 0 ((:length backend) ((:pop-front-all backend) values)))
     (check (str (:name backend) " push_pop length") 0 ((:length backend) ((:push-pop backend) size)))))
@@ -206,6 +241,20 @@
         pop-back-all (:pop-back-all backend)
         pop-front-all (:pop-front-all backend)
         push-pop (:push-pop backend)
+        concat-map-singleton (:concat-map-singleton backend)
+        concat-map-pair (:concat-map-pair backend)
+        concat-map-mostly-empty (:concat-map-mostly-empty backend)
+        concat-map-constant (:concat-map-constant backend)
+        concat-map-singleton-input (build-back 20000)
+        concat-map-pair-input (build-back 10000)
+        concat-map-mostly-empty-input (build-back 20000)
+        concat-map-chunk-input (build-back 5000)
+        concat-map-1024-input (build-back 200)
+        concat-map-one-large-input (build-back 1)
+        concat-map-two-large-input (build-back 2)
+        concat-map-33-values (build-back 33)
+        concat-map-1024-values (build-back 1024)
+        concat-map-large-values (build-back 1000000)
         chunks (build-chunks values (min concat-chunks size))]
     [{:group "Sequential write" :name "push_back" :run #(build-back size)}
      {:group "Sequential write" :name "push_front" :run #(build-front size)}
@@ -217,7 +266,14 @@
      {:group "Subvec and concat" :name "concat chunks" :run #(concat-built-chunks chunks)}
      {:group "Push/pop" :name "pop_back all" :run #(pop-back-all values)}
      {:group "Push/pop" :name "pop_front all" :run #(pop-front-all values)}
-     {:group "Push/pop" :name "push then pop" :run #(push-pop size)}]))
+     {:group "Push/pop" :name "push then pop" :run #(push-pop size)}
+     {:group "Concat map" :name "20k singleton" :run #(concat-map-singleton concat-map-singleton-input)}
+     {:group "Concat map" :name "10k pair" :run #(concat-map-pair concat-map-pair-input)}
+     {:group "Concat map" :name "20k mostly empty" :run #(concat-map-mostly-empty concat-map-mostly-empty-input)}
+     {:group "Concat map" :name "5k x 33 elements" :run #(concat-map-constant concat-map-chunk-input concat-map-33-values)}
+     {:group "Concat map" :name "200 x 1024 elements" :run #(concat-map-constant concat-map-1024-input concat-map-1024-values)}
+     {:group "Concat map" :name "one large vector" :run #(concat-map-constant concat-map-one-large-input concat-map-large-values)}
+     {:group "Concat map" :name "two large vectors" :run #(concat-map-constant concat-map-two-large-input concat-map-large-values)}]))
 
 (defn print-results [results]
   (doseq [[group rows] (group-by :group results)]

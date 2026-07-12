@@ -1122,6 +1122,141 @@ let test_repeated_concat_map_preserves_invariants_and_order () =
   in
   apply 2 (of_list [ 0; 1; 2; 3 ]) [ 0; 1; 2; 3 ]
 
+let concat_map_vector start count =
+  Rrbvec.init count (fun offset -> start + offset)
+
+let test_concat_map_mapped_length_boundaries () =
+  let mapped_lengths = [| 0; 1; 31; 32; 33; 1024; 1025 |] in
+  let input = Rrbvec.init (Array.length mapped_lengths) Fun.id in
+  let mapped value =
+    concat_map_vector (value * 10_000) (Array.unsafe_get mapped_lengths value)
+  in
+  let expected =
+    mapped_lengths
+    |> Array.to_list
+    |> List.mapi (fun value count ->
+           Array.to_list (Array.init count (fun offset -> (value * 10_000) + offset)))
+    |> List.concat |> Array.of_list
+  in
+  check_int_vector "concat_map mapped length boundaries" expected
+    (concat_map mapped input)
+
+let test_concat_map_input_length_boundaries () =
+  List.iter
+    (fun input_length ->
+      let input = Rrbvec.init input_length Fun.id in
+      let expected =
+        List.init input_length Fun.id
+        |> List.filter (fun value -> value mod 5 <> 0)
+        |> Array.of_list
+      in
+      check_int_vector
+        (Printf.sprintf "concat_map input length %d" input_length)
+        expected
+        (concat_map
+           (fun value -> if value mod 5 = 0 then empty else singleton value)
+           input))
+    [ 0; 1; 2; 10_000 ]
+
+let test_concat_map_alternating_small_and_large_results () =
+  let mapped_lengths = [| 1; 1025; 0; 33; 1024; 1025; 2 |] in
+  let input = Rrbvec.init (Array.length mapped_lengths) Fun.id in
+  let expected =
+    mapped_lengths
+    |> Array.to_list
+    |> List.mapi (fun value count ->
+           List.init count (fun offset -> (value * 100_000) + offset))
+    |> List.concat |> Array.of_list
+  in
+  let actual =
+    concat_map
+      (fun value ->
+        concat_map_vector (value * 100_000)
+          (Array.unsafe_get mapped_lengths value))
+      input
+  in
+  check_int_vector "concat_map alternating small and large" expected actual
+
+let test_concat_map_accepts_mixed_layout_and_subvec_results () =
+  let mixed =
+    let values = Rrbvec.init 1200 Fun.id in
+    push_back (push_front values (-1)) 1200
+  in
+  let sliced = subvec mixed 17 1183 in
+  let input = of_list [ 0; 1; 2 ] in
+  let mapped = function
+    | 0 -> mixed
+    | 1 -> sliced
+    | _ -> Rrbvec.init 33 (fun index -> 10_000 + index)
+  in
+  let expected =
+    Array.of_list
+      (to_list mixed @ to_list sliced
+      @ List.init 33 (fun index -> 10_000 + index))
+  in
+  check_int_vector "concat_map mixed layout and subvec" expected
+    (concat_map mapped input)
+
+exception Concat_map_callback_stop
+
+let test_concat_map_callback_order_count_and_exception () =
+  let input = Rrbvec.init 100 Fun.id in
+  let seen = ref [] in
+  let result =
+    concat_map
+      (fun value ->
+        seen := value :: !seen;
+        if value mod 3 = 0 then empty else singleton value)
+      input
+  in
+  check_list "concat_map callback order" (range 100) (List.rev !seen);
+  check_int "concat_map callback count" 100 (List.length !seen);
+  check_int_vector "concat_map callback result"
+    (range 100 |> List.filter (fun value -> value mod 3 <> 0) |> Array.of_list)
+    result;
+  let seen_before_exception = ref [] in
+  (match
+     concat_map
+       (fun value ->
+         seen_before_exception := value :: !seen_before_exception;
+         if value = 37 then raise Concat_map_callback_stop;
+         singleton value)
+       input
+   with
+  | exception Concat_map_callback_stop -> ()
+  | exception exn ->
+      Alcotest.failf "concat_map callback: unexpected exception %s"
+        (Printexc.to_string exn)
+  | _ -> Alcotest.fail "concat_map callback: expected exception");
+  check_list "concat_map callback stops at exception" (range 38)
+    (List.rev !seen_before_exception)
+
+let test_concat_map_single_input_reuses_mapped_vector () =
+  let mapped = Rrbvec.init 1_000_000 Fun.id in
+  let result = concat_map (fun _ -> mapped) (singleton 0) in
+  check "concat_map single input physical equality" (result == mapped)
+
+let test_concat_map_result_remains_persistent_after_set () =
+  let mapped = Rrbvec.init 96 Fun.id in
+  let result = concat_map (fun _ -> mapped) (of_list [ 0; 1 ]) in
+  let changed = set result 32 (-1) in
+  check_int "concat_map source unchanged after set" 32 (nth mapped 32);
+  check_int "concat_map result unchanged after set" 32 (nth result 32);
+  check_int "concat_map changed value" (-1) (nth changed 32);
+  check_invariants "concat_map persistent result" result;
+  check_invariants "concat_map persistent changed result" changed
+
+let test_concat_map_singletons_allocate_linearly () =
+  let input = Rrbvec.init 10_000 Fun.id in
+  Gc.compact ();
+  let before = Gc.allocated_bytes () in
+  let result = concat_map singleton input in
+  let allocated = Gc.allocated_bytes () -. before in
+  check_int_vector "concat_map singleton allocation" (Array.init 10_000 Fun.id)
+    result;
+  check_allocated_less_than "concat_map singleton allocation" 5_000_000.
+    allocated
+
 let test_concat_aliases_and_collection_helpers_preserve_invariants () =
   let boundaries = [ 0; 1; 31; 32; 33; 63; 64; 65 ] in
   List.iter
@@ -1752,6 +1887,22 @@ let () =
             test_alternating_concat_and_subvec_preserve_invariants_and_order;
           test_case "repeated_concat_map_preserves_invariants_and_order"
             test_repeated_concat_map_preserves_invariants_and_order;
+          test_case "concat_map_mapped_length_boundaries"
+            test_concat_map_mapped_length_boundaries;
+          test_case "concat_map_input_length_boundaries"
+            test_concat_map_input_length_boundaries;
+          test_case "concat_map_alternating_small_and_large_results"
+            test_concat_map_alternating_small_and_large_results;
+          test_case "concat_map_accepts_mixed_layout_and_subvec_results"
+            test_concat_map_accepts_mixed_layout_and_subvec_results;
+          test_case "concat_map_callback_order_count_and_exception"
+            test_concat_map_callback_order_count_and_exception;
+          test_case "concat_map_single_input_reuses_mapped_vector"
+            test_concat_map_single_input_reuses_mapped_vector;
+          test_case "concat_map_result_remains_persistent_after_set"
+            test_concat_map_result_remains_persistent_after_set;
+          test_case "concat_map_singletons_allocate_linearly"
+            test_concat_map_singletons_allocate_linearly;
           test_case "concat_aliases_and_collection_helpers_preserve_invariants"
             test_concat_aliases_and_collection_helpers_preserve_invariants;
           test_case

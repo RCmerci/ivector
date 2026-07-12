@@ -1493,8 +1493,6 @@ let rev = function
       make_with_edges (reverse_array v.tail) (rev_node v.root)
         (reverse_array v.head)
 
-let concat_map f v = fold_left (fun acc value -> concat acc (f value)) empty v
-
 exception Predicate_found
 exception Predicate_failed
 
@@ -2196,11 +2194,115 @@ let chunk_sink_add sink value =
       Array.unsafe_set chunk sink.sink_chunk_length value;
       sink.sink_chunk_length <- sink.sink_chunk_length + 1
 
+let chunk_sink_add_array sink values =
+  let values_length = Array.length values in
+  let rec loop offset =
+    if offset < values_length then
+      match sink.sink_chunk with
+      | Some chunk when sink.sink_chunk_length = width ->
+          sink.sink_chunks_rev <- chunk :: sink.sink_chunks_rev;
+          sink.sink_chunk <- None;
+          sink.sink_chunk_length <- 0;
+          loop offset
+      | None when offset = 0 && values_length = width ->
+          (* A full immutable leaf can be shared. It is flushed before the
+             sink accepts another write. *)
+          sink.sink_chunk <- Some values;
+          sink.sink_chunk_length <- width
+      | None ->
+          let copied = min width (values_length - offset) in
+          let chunk = Array.make width (Array.unsafe_get values offset) in
+          Array.blit values offset chunk 0 copied;
+          sink.sink_chunk <- Some chunk;
+          sink.sink_chunk_length <- copied;
+          loop (offset + copied)
+      | Some chunk ->
+          let copied =
+            min
+              (width - sink.sink_chunk_length)
+              (values_length - offset)
+          in
+          Array.blit values offset chunk sink.sink_chunk_length copied;
+          sink.sink_chunk_length <- sink.sink_chunk_length + copied;
+          loop (offset + copied)
+  in
+  loop 0
+
 let chunk_sink_result sink =
   match sink.sink_chunk with
   | None -> empty
   | Some chunk ->
       finish_nonempty_chunks sink.sink_chunks_rev chunk sink.sink_chunk_length
+
+let rec chunk_sink_add_node sink = function
+  | Empty -> ()
+  | Leaf values -> chunk_sink_add_array sink values
+  | Branch branch ->
+      for index = 0 to Array.length branch.children - 1 do
+        chunk_sink_add_node sink
+          (Array.unsafe_get branch.children index)
+      done
+
+let chunk_sink_add_vector sink = function
+  | Empty_vector -> ()
+  | Vector values ->
+      chunk_sink_add_array sink values.head;
+      chunk_sink_add_node sink values.root;
+      chunk_sink_add_array sink values.tail
+
+(* Batch vectors through height 1; larger vectors keep their RRB subtrees by
+   going through concat directly. *)
+let concat_map_batch_limit = capacity_height_1
+
+let concat_map f = function
+  | Empty_vector -> empty
+  | Vector values when values.count = 1 -> f (peek_front_vector values)
+  | Vector values ->
+      let prefix = ref empty in
+      let pending = create_chunk_sink () in
+      let pending_is_empty () =
+        match pending.sink_chunk with
+        | None -> true
+        | Some _ -> false
+      in
+      let reset_pending () =
+        pending.sink_chunks_rev <- [];
+        pending.sink_chunk <- None;
+        pending.sink_chunk_length <- 0
+      in
+      let flush_pending () =
+        if not (pending_is_empty ()) then (
+          prefix := concat !prefix (chunk_sink_result pending);
+          reset_pending ())
+      in
+      let consume value =
+        let mapped = f value in
+        if not (is_empty mapped) then
+          if is_empty !prefix && pending_is_empty () then prefix := mapped
+          else if length mapped <= concat_map_batch_limit then
+            chunk_sink_add_vector pending mapped
+          else (
+            flush_pending ();
+            prefix := concat !prefix mapped)
+      in
+      let consume_array array =
+        for index = 0 to Array.length array - 1 do
+          consume (Array.unsafe_get array index)
+        done
+      in
+      let rec consume_node = function
+        | Empty -> ()
+        | Leaf array -> consume_array array
+        | Branch branch ->
+            for index = 0 to Array.length branch.children - 1 do
+              consume_node (Array.unsafe_get branch.children index)
+            done
+      in
+      consume_array values.head;
+      consume_node values.root;
+      consume_array values.tail;
+      flush_pending ();
+      !prefix
 
 let map2_array f sink left left_index right right_index count =
   for offset = 0 to count - 1 do

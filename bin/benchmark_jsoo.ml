@@ -108,6 +108,19 @@ let pop_front_all values =
 
 let push_pop size = pop_back_all (build_back size)
 
+let concat_map_singleton values = Rrbvec.concat_map Rrbvec.singleton values
+
+let concat_map_pair values =
+  Rrbvec.concat_map (fun value -> Rrbvec.of_array [| value; -value |]) values
+
+let concat_map_mostly_empty values =
+  Rrbvec.concat_map
+    (fun value -> if value mod 10 = 0 then Rrbvec.singleton value else Rrbvec.empty)
+    values
+
+let concat_map_constant values mapped =
+  Rrbvec.concat_map (fun _ -> mapped) values
+
 let set_api name fn api =
   Js.Unsafe.set api name (Js.Unsafe.inject (Js.wrap_callback fn))
 
@@ -128,5 +141,9 @@ let () =
   set_api "popBackAll" pop_back_all api;
   set_api "popFrontAll" pop_front_all api;
   set_api "pushPop" push_pop api;
+  set_api "concatMapSingleton" concat_map_singleton api;
+  set_api "concatMapPair" concat_map_pair api;
+  set_api "concatMapMostlyEmpty" concat_map_mostly_empty api;
+  set_api "concatMapConstant" concat_map_constant api;
   set_api "rangeSum" range_sum api;
   Js.Unsafe.set Js.Unsafe.global "rrbvecJsoo" api
