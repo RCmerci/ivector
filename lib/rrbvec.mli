@@ -267,6 +267,11 @@ val of_array : 'a array -> 'a t
 val to_array : 'a t -> 'a array
 
 module Private : sig
+  (** Return the target node arities used by Scala Quick concatenation for
+      input arities in the range 1 to 32. Intended for exhaustive tests of the
+      rebalance window. *)
+  val concat_target_sizes : int array -> int array
+
   (** Check internal structural invariants and the Scala Quick logarithmic
       height bound. The temporary [effectiveNumberOfSlots + 2] rebalance-window
       rule is not a per-branch tree invariant. Intended for tests and

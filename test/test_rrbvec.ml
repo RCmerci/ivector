@@ -992,6 +992,76 @@ let test_concat_exact_divisible_slot_totals_follow_scala_quick_bound () =
     !next_value;
   check_case "exact 1024 logical slots" left right !next_value
 
+let test_concat_target_sizes_exhaustive () =
+  let sum values = Array.fold_left ( + ) 0 values in
+  let show_arities values =
+    String.concat "," (List.map string_of_int (Array.to_list values))
+  in
+  let make_left_packed count total =
+    let remaining = ref total in
+    Array.init count (fun index ->
+        let slots_left = count - index - 1 in
+        let arity = min rrb_width (!remaining - slots_left) in
+        remaining := !remaining - arity;
+        arity)
+  in
+  let check_layout input =
+    let targets = Private.concat_target_sizes input in
+    let total_slots = sum input in
+    let target_count = Array.length targets in
+    let quick_window = (total_slots / rrb_width) + 3 in
+    let expected_target_count = min (Array.length input) quick_window in
+    let expected_order = Array.init total_slots Fun.id in
+    let source_slots = ref 0 in
+    let input_order =
+      Array.to_list input
+      |> List.concat_map (fun arity ->
+             let start = !source_slots in
+             source_slots := start + arity;
+             List.init arity (fun offset -> start + offset))
+      |> Array.of_list
+    in
+    let target_slots = ref 0 in
+    let target_order =
+      Array.to_list targets
+      |> List.concat_map (fun arity ->
+             let start = !target_slots in
+             target_slots := start + arity;
+             List.init arity (fun offset -> start + offset))
+      |> Array.of_list
+    in
+    if sum targets <> total_slots then
+      failf "target slots changed for %s: got %s" (show_arities input)
+        (show_arities targets);
+    if not (Array.for_all (fun arity -> arity >= 1 && arity <= rrb_width) targets)
+    then
+      failf "target arity outside 1..32 for %s" (show_arities input);
+    if target_count <> expected_target_count then
+      failf
+        "wrong target count for total=%d input_count=%d: expected=%d actual=%d"
+        total_slots (Array.length input) expected_target_count target_count;
+    if input_order <> expected_order || target_order <> expected_order then
+      failf "slot order changed for %s" (show_arities input)
+  in
+  for count = 1 to 64 do
+    for total_slots = count to count * rrb_width do
+      let left_packed = make_left_packed count total_slots in
+      check_layout left_packed;
+      check_layout (Array.of_list (List.rev (Array.to_list left_packed)))
+    done
+  done;
+  for total_slots = rrb_width to 64 * rrb_width do
+    if total_slots mod rrb_width = 0 then (
+      let scala_quick_count = (total_slots / rrb_width) + 3 in
+      if scala_quick_count <= 64 && scala_quick_count <= total_slots then
+        let input = make_left_packed scala_quick_count total_slots in
+        let targets = Private.concat_target_sizes input in
+        check_int
+          (Printf.sprintf "exact multiple %d keeps Scala Quick extra slot"
+             total_slots)
+          scala_quick_count (Array.length targets))
+  done
+
 let test_balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries () =
   let chunk_sizes =
     [
@@ -1875,6 +1945,8 @@ let () =
           test_case
             "concat_exact_divisible_slot_totals_follow_scala_quick_bound"
             test_concat_exact_divisible_slot_totals_follow_scala_quick_bound;
+          test_case "concat_target_sizes_exhaustive"
+            test_concat_target_sizes_exhaustive;
           test_case
             "balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries"
             test_balanced_pairwise_concat_preserves_invariants_for_sparse_boundaries;

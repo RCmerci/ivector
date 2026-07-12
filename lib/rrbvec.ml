@@ -2411,6 +2411,10 @@ let partition p v =
       (chunk_sink_result left, chunk_sink_result right)
 
 module Private = struct
+  let concat_target_sizes arities =
+    concat_target_sizes
+      (Array.map (fun arity -> Leaf (Array.make arity ())) arities)
+
   (*
     Internal invariants checked by [invariants]:
 
