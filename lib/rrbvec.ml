@@ -48,6 +48,10 @@ let is_empty = function
 
 let invalid_index () = invalid_arg "index out of bounds"
 
+let ensure_count_growth count increment =
+  if increment >= max_int || count >= max_int - increment then
+    invalid_arg "Rrbvec: maximum length exceeded"
+
 let node_count = function
   | Empty -> 0
   | Leaf values -> Array.length values
@@ -854,6 +858,7 @@ let prepend_full_leaf root leaf =
         else make_strict_branch_node [| result.leaf_node; root |]
 
 let push_back v value =
+  ensure_count_growth (length v) 1;
   match v with
   | Empty_vector -> make_with_edges [||] Empty [| value |]
   | Vector v ->
@@ -956,6 +961,7 @@ let fold_right f v acc =
       fold_array_right_range f v.head 0 (Array.length v.head) acc
 
 let concat left right =
+  ensure_count_growth (length left) (length right);
   match (left, right) with
   | Empty_vector, vector | vector, Empty_vector -> vector
   | Vector left, Vector right ->
@@ -963,6 +969,7 @@ let concat left right =
       make_with_edges left.head root right.tail
 
 let push_front v value =
+  ensure_count_growth (length v) 1;
   match v with
   | Empty_vector -> make_with_edges [| value |] Empty [||]
   | Vector v ->

@@ -28,10 +28,16 @@ val nth_opt : 'a t -> int -> 'a option
     to [length v]. *)
 val set : 'a t -> int -> 'a -> 'a t
 
-(** Return a vector with [value] added at the back. *)
+(** Return a vector with [value] added at the back.
+
+    Raises [Invalid_argument] when the resulting length would be greater than
+    or equal to [max_int]. *)
 val push_back : 'a t -> 'a -> 'a t
 
-(** Return a vector with [value] added at the front. *)
+(** Return a vector with [value] added at the front.
+
+    Raises [Invalid_argument] when the resulting length would be greater than
+    or equal to [max_int]. *)
 val push_front : 'a t -> 'a -> 'a t
 
 (** Remove and return the value at the back of the vector, along with the
@@ -60,7 +66,10 @@ val peek_back : 'a t -> 'a
     empty. *)
 val peek_back_opt : 'a t -> 'a option
 
-(** Concatenate two vectors. *)
+(** Concatenate two vectors.
+
+    Raises [Invalid_argument] when the resulting length would be greater than
+    or equal to [max_int]. *)
 val append : 'a t -> 'a t -> 'a t
 
 (** Concatenate two vectors. Alias for [append]. *)
@@ -232,7 +241,10 @@ val partition : ('a -> bool) -> 'a t -> 'a t * 'a t
     than [length v]. *)
 val subvec : 'a t -> int -> int -> 'a t option
 
-(** Concatenate two vectors. *)
+(** Concatenate two vectors.
+
+    Raises [Invalid_argument] when the resulting length would be greater than
+    or equal to [max_int]. *)
 val concat : 'a t -> 'a t -> 'a t
 
 (** Build a vector containing the list values in order. *)

@@ -772,6 +772,27 @@ let test_concat_and_subvec_preserve_order () =
   expect_none "subvec inverted range" (Rrbvec.subvec combined 2 1);
   expect_none "subvec past end" (Rrbvec.subvec combined 0 1121)
 
+let test_count_growth_rejects_max_int_length () =
+  let rec double remaining values =
+    if remaining = 0 then values
+    else double (remaining - 1) (concat values values)
+  in
+  let half = double (Sys.int_size - 2) (singleton 7) in
+  let half_length = length half in
+  check_int "shared half length" (1 lsl (Sys.int_size - 2)) half_length;
+  let half_minus_one = subvec half 0 (half_length - 1) in
+  check_raises_invalid_arg "concat rejects max_int length" (fun () ->
+      concat half half_minus_one);
+  check_raises_invalid_arg "concat rejects overflowed length" (fun () ->
+      concat half half);
+  let half_minus_two = subvec half 0 (half_length - 2) in
+  let largest = concat half half_minus_two in
+  check_int "largest supported length" (max_int - 1) (length largest);
+  check_raises_invalid_arg "push_back rejects max_int length" (fun () ->
+      push_back largest 8);
+  check_raises_invalid_arg "push_front rejects max_int length" (fun () ->
+      push_front largest 8)
+
 let concat_49_chunks_of_65 () =
   List.init 49 (fun chunk ->
       Rrbvec.init 65 (fun index -> (chunk * 65) + index))
@@ -1674,6 +1695,8 @@ let () =
           test_case "size_table_lookup_starts_from_radix_slot"
             test_size_table_lookup_starts_from_radix_slot;
           test_case "push_get_and_persistence" test_push_get_and_persistence;
+          test_case "count_growth_rejects_max_int_length"
+            test_count_growth_rejects_max_int_length;
           test_case "nth_tail_read_allocation_does_not_allocate_options"
             test_nth_tail_read_allocation_does_not_allocate_options;
           test_case "strict_peek_reads_do_not_allocate_options"
