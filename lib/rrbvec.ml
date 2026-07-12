@@ -2121,21 +2121,22 @@ let mem_assoc ?cmp key bindings =
   | Some cmp -> exists (fun (candidate, _) -> cmp candidate key = 0) bindings
 
 let remove_assoc ?cmp key bindings =
-  match cmp with
-  | None ->
-      snd
-        (fold_left
-           (fun (removed, result) ((candidate, _) as binding) ->
-             if (not removed) && candidate = key then (true, result)
-             else (removed, push_back result binding))
-           (false, empty) bindings)
-  | Some cmp ->
-      snd
-        (fold_left
-           (fun (removed, result) ((candidate, _) as binding) ->
-             if (not removed) && cmp candidate key = 0 then (true, result)
-             else (removed, push_back result binding))
-           (false, empty) bindings)
+  let exception Found of int in
+  let index = ref 0 in
+  let remove_at index =
+    concat
+      (Option.get (subvec bindings 0 index))
+      (Option.get (subvec bindings (index + 1) (length bindings)))
+  in
+  let visit matches (candidate, _) =
+    if matches candidate then raise (Found !index) else incr index
+  in
+  try
+    (match cmp with
+    | None -> iter (visit (fun candidate -> candidate = key)) bindings
+    | Some cmp -> iter (visit (fun candidate -> cmp candidate key = 0)) bindings);
+    bindings
+  with Found index -> remove_at index
 
 let init_array length start f =
   if length = 0 then [||]

@@ -889,6 +889,26 @@ let test_remove_assoc_family_matches_list () =
   check_int_list "remove_assoc custom comparison preserves values" [ 2; 3 ]
     (List.map snd (to_list custom_removed))
 
+let test_remove_assoc_reuses_structure () =
+  let size = 100_000 in
+  let bindings = of_array (Array.init size (fun key -> (key, key))) in
+  let missing = remove_assoc size bindings in
+  check_bool "remove_assoc missing key reuses vector" true
+    (missing == bindings);
+  let missing_with_cmp = remove_assoc ~cmp:Int.compare size bindings in
+  check_bool "remove_assoc missing key with cmp reuses vector" true
+    (missing_with_cmp == bindings);
+  let removed, allocated =
+    measure_allocated_bytes (fun () -> remove_assoc 0 bindings)
+  in
+  Private.invariants removed;
+  check_int "remove_assoc first binding length" (size - 1) (length removed);
+  check_int "remove_assoc first binding new front" 1 (fst (peek_front removed));
+  check_int "remove_assoc first binding back" (size - 1)
+    (fst (peek_back removed));
+  check_allocated_less_than "remove_assoc first binding allocation" 200_000.
+    allocated
+
 let () =
   Alcotest.run "rrbvec public api"
     [
@@ -937,5 +957,7 @@ let () =
           test_case "assoc_family_matches_list" test_assoc_family_matches_list;
           test_case "remove_assoc_family_matches_list"
             test_remove_assoc_family_matches_list;
+          test_case "remove_assoc_reuses_structure"
+            test_remove_assoc_reuses_structure;
         ] );
     ]
